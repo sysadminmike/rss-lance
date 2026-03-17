@@ -1,0 +1,63 @@
+# Environment files
+.env
+.env.*
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+
+# Go build output
+build/
+release/
+
+# Server binaries (built by build scripts)
+*.exe
+
+# Pre-built native libraries (download with download-artifacts.sh)
+server/lib/
+
+# lancedb-go source (cloned by build-native scripts, has its own .git)
+server/_lancedb-go/
+
+# Rust build cache (lancedb-go)
+server/lancedb-go/rust/target/
+
+# DuckDB CLI downloaded by build scripts
+tools/duckdb
+tools/duckdb.exe
+
+# LanceDB / DuckDB runtime data
+data/
+server.duckdb
+server.duckdb.wal
+
+# Test artifacts
+server_test.log
+server_test_err.log
+*.log
+
+# Node.js (frontend tests only - not needed for the app)
+frontend/node_modules/
+frontend/package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+
+# Internal planning docs
+IMPLEMENTATION_PLAN.md
+.idea/
+*.swp
+*.swo
+*~
+
+# Internal dev files
+IMPLEMENTATION_PLAN.md

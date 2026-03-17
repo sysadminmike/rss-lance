@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RSS-Lance</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="stylesheet" href="/css/custom.css" />
+</head>
+<body>
+  <!-- ── Three-pane layout ──────────────────────────────── -->
+  <div id="app">
+
+    <!-- Left: Feed sidebar -->
+    <aside id="sidebar">
+      <div id="sidebar-header">
+        <span class="app-title">RSS-Lance</span>
+        <button id="btn-add-feed" title="Add feed">＋</button>
+        <button id="btn-mark-all-read" title="Mark all read">✓</button>
+      </div>
+      <nav id="feed-list">
+        <div class="loading-msg">Loading feeds…</div>
+      </nav>
+    </aside>
+
+    <!-- Resize handle: sidebar ↔ article list -->
+    <div class="pane-divider" id="divider-sidebar"></div>
+
+    <!-- Middle: Article list -->
+    <section id="article-list-pane">
+      <div id="article-list-header">
+        <span id="current-feed-title">All Articles</span>
+        <div id="article-list-controls">
+          <label class="toggle-label">
+            <input type="checkbox" id="unread-only-toggle" /> Unread only
+          </label>
+          <button id="btn-sort-order" class="sort-btn" title="Toggle sort order">
+            ↓ Newest
+          </button>
+        </div>
+      </div>
+      <ul id="article-list">
+        <li class="loading-msg">Select a feed to read.</li>
+      </ul>
+
+    </section>
+
+    <!-- Resize handle: article list ↔ reader -->
+    <div class="pane-divider" id="divider-list"></div>
+
+    <!-- Right: Reading pane -->
+    <main id="reader-pane">
+      <div id="reader-placeholder">
+        <p>Select an article to read.</p>
+      </div>
+      <article id="reader-content" class="hidden">
+        <header id="reader-header">
+          <h1 id="reader-title"></h1>
+          <div id="reader-meta">
+            <span id="reader-feed"></span>
+            <span id="reader-author"></span>
+            <span id="reader-date"></span>
+            <a id="reader-orig-link" target="_blank" rel="noopener">Original ↗</a>
+          </div>
+          <div id="reader-actions">
+            <button id="btn-star" title="Star article">☆</button>
+            <button id="btn-mark-read" title="Mark read/unread">○</button>
+          </div>
+        </header>
+        <div id="reader-body"></div>
+      </article>
+      <div id="reader-stream" class="hidden"></div>
+    </main>
+  </div>
+
+  <!-- Add feed modal -->
+  <div id="modal-overlay" class="hidden">
+    <div id="modal-add-feed">
+      <h2>Add Feed</h2>
+      <label for="input-feed-url">RSS / Atom URL</label>
+      <input id="input-feed-url" type="url" placeholder="https://example.com/feed.xml" autocomplete="off" />
+      <div id="modal-actions">
+        <button id="btn-modal-cancel">Cancel</button>
+        <button id="btn-modal-add" class="primary">Add</button>
+      </div>
+      <p id="modal-status"></p>
+    </div>
+  </div>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+psycopg2-binary>=2.9
+lancedb>=0.29
+pyarrow>=23.0
+tqdm>=4.67
+requests>=2.32

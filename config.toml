@@ -1,0 +1,39 @@
+[storage]
+type = "local"              # "local" or "s3"
+path = "./data"             # local path or S3 URI (e.g. "s3://my-bucket/rss-lance")
+# s3_region = "us-east-1"   # only needed if not set in ~/.aws/config
+# s3_endpoint = ""           # custom endpoint for MinIO, R2, etc.
+
+[fetcher]
+interval_minutes = 30
+max_concurrent = 5
+user_agent = "RSS-Lance/1.0"
+
+[server]
+host = "127.0.0.1"
+port = 8080
+frontend_dir = "./frontend"
+show_shutdown = false       # show a "Stop Server" button in the web UI
+table_page_size = 200      # rows per page in the DB table viewer
+
+# Compaction, write-cache, and log-buffer settings are managed in the
+# Settings page (stored in the Lance settings table).  Defaults:
+#   compaction.articles = 20, feeds = 50, categories = 50, pending_feeds = 10
+#   cache.flush_threshold = 20, cache.flush_interval_secs = 120
+#   log_buffer.flush_threshold = 20, log_buffer.flush_interval_secs = 30
+
+[migration.ttrss]
+# postgres_url = "postgresql://user:pass@host:5432/ttrss"
+# sanitize = true    # strip dangerous HTML, tracking pixels, social links, tracking params
+
+[migration.miniflux]
+# url       = "https://miniflux.example.com"
+# api_token = "your-api-token"         # preferred: Settings → API Keys
+# username  = "admin"                  # alternative: HTTP basic auth
+# password  = "secret"
+
+[migration.freshrss]
+# url      = "https://freshrss.example.com"  # base URL, no trailing slash
+# username = "admin"
+# password = "your-password"
+# api_path = "/api/greader.php"               # override if install differs

@@ -1,0 +1,8 @@
+feedparser>=6.0
+beautifulsoup4>=4.12
+lancedb>=0.29
+pandas>=2.0
+pyarrow>=23.0
+schedule>=1.2
+requests>=2.32
+tomli>=2.0; python_version < "3.11"

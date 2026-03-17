@@ -1,0 +1,15 @@
+{
+  "name": "rss-lance-frontend-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Test suite for RSS-Lance frontend",
+  "scripts": {
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --config jest.config.js",
+    "test:watch": "node --experimental-vm-modules node_modules/.bin/jest --config jest.config.js --watch"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
+    "@jest/globals": "^29.7.0"
+  }
+}

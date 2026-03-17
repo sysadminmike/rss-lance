@@ -1,0 +1,13 @@
+.venv/
+build/
+tools/
+data/
+.git/
+__pycache__/
+*.pyc
+*.exe
+*.db
+*.log
+migrate/
+IMPLEMENTATION_PLAN.md
+AGENT.md

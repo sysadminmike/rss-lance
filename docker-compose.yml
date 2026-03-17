@@ -1,0 +1,42 @@
+# RSS-Lance docker-compose
+#
+# Usage:
+#   docker compose up -d          # start server + fetcher
+#   docker compose up server      # server only
+#   docker compose run --rm fetcher-once  # one-shot fetch
+#
+# Lance data lives in ./data on the host (or replace with an S3/NFS/Samba mount).
+
+services:
+  server:
+    build: .
+    container_name: rss-lance-server
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+
+  fetcher:
+    build: .
+    container_name: rss-lance-fetcher
+    command: ["python", "fetcher/main.py"]
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+
+  # One-shot: fetch all due feeds then exit
+  fetcher-once:
+    build: .
+    command: ["python", "fetcher/main.py", "--once"]
+    volumes:
+      - ./data:/data
+    profiles: ["tools"]
+
+  # One-shot: insert demo feeds then exit
+  demo-data:
+    build: .
+    command: ["python", "fetcher/demo_feeds.py"]
+    volumes:
+      - ./data:/data
+    profiles: ["tools"]
