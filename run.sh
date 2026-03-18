@@ -52,7 +52,7 @@ cmd_server() {
         echo "Server not built. Run build.sh server first."
         exit 1
     fi
-    echo "Starting HTTP server ..."
+    echo "Loading RSS-Lance server (please wait) ..."
     local args=()
     if [ -n "$DEBUG_FLAG" ]; then
         args+=("--debug" "$DEBUG_FLAG")

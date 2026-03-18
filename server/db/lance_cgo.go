@@ -594,13 +594,24 @@ func (s *cgoStore) GetDBStatus() (*DBStatus, error) {
 	}
 
 	artTbl := s.lanceTable("articles")
-	q := fmt.Sprintf(`SELECT
+	cte, hasCTE := s.cache.pendingCTE()
+	isReadExpr := "a.is_read"
+	isStarredExpr := "a.is_starred"
+	cacheJoin := ""
+	if hasCTE {
+		cacheJoin = "LEFT JOIN _cache c ON a.article_id = c.article_id"
+		isReadExpr = "COALESCE(c.is_read, a.is_read)"
+		isStarredExpr = "COALESCE(c.is_starred, a.is_starred)"
+	}
+
+	q := fmt.Sprintf(`%s SELECT
 		COUNT(*) AS total,
-		SUM(CASE WHEN is_read = false THEN 1 ELSE 0 END) AS unread,
-		SUM(CASE WHEN is_starred = true THEN 1 ELSE 0 END) AS starred,
-		CAST(MIN(published_at) AS VARCHAR) AS oldest,
-		CAST(MAX(published_at) AS VARCHAR) AS newest
-	FROM %s`, artTbl)
+		SUM(CASE WHEN %s = false THEN 1 ELSE 0 END) AS unread,
+		SUM(CASE WHEN %s = true THEN 1 ELSE 0 END) AS starred,
+		CAST(MIN(a.published_at) AS VARCHAR) AS oldest,
+		CAST(MAX(a.published_at) AS VARCHAR) AS newest
+	FROM %s a
+	%s`, cte, isReadExpr, isStarredExpr, artTbl, cacheJoin)
 	row := s.conn.QueryRow(q)
 	var total, unread, starred int
 	var oldest, newest sql.NullString

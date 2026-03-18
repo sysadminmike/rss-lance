@@ -290,6 +290,14 @@ func rowInt(row map[string]any, key string) int {
 	case json.Number:
 		n, _ := val.Int64()
 		return int(n)
+	case string:
+		// DuckDB JSON mode sometimes returns integers as strings
+		// (e.g. when SUM result involves a cast expression).
+		var n int
+		if _, err := fmt.Sscanf(val, "%d", &n); err == nil {
+			return n
+		}
+		return 0
 	default:
 		return 0
 	}
@@ -760,15 +768,25 @@ func (s *cliStore) GetDBStatus() (*DBStatus, error) {
 		status.Tables = append(status.Tables, ts)
 	}
 
-	// Article aggregate stats
+	// Article aggregate stats (overlay write-cache like other queries)
 	artTbl := s.lanceTable("articles")
-	q := fmt.Sprintf(`SELECT
+	cte, hasCTE := s.cache.pendingCTE()
+	isReadExpr := "a.is_read"
+	isStarredExpr := "a.is_starred"
+	cacheJoin := ""
+	if hasCTE {
+		cacheJoin = "LEFT JOIN _cache c ON a.article_id = c.article_id"
+		isReadExpr = "COALESCE(c.is_read, a.is_read)"
+		isStarredExpr = "COALESCE(c.is_starred, a.is_starred)"
+	}
+	q := fmt.Sprintf(`%s SELECT
 		COUNT(*) AS total,
-		SUM(CASE WHEN is_read = false THEN 1 ELSE 0 END) AS unread,
-		SUM(CASE WHEN is_starred = true THEN 1 ELSE 0 END) AS starred,
-		MIN(published_at) AS oldest,
-		MAX(published_at) AS newest
-	FROM %s`, artTbl)
+		SUM(CASE WHEN %s = false THEN 1 ELSE 0 END) AS unread,
+		SUM(CASE WHEN %s = true THEN 1 ELSE 0 END) AS starred,
+		MIN(a.published_at) AS oldest,
+		MAX(a.published_at) AS newest
+	FROM %s a
+	%s`, cte, isReadExpr, isStarredExpr, artTbl, cacheJoin)
 	rows, err := s.lanceQuery(q)
 	if err == nil && len(rows) > 0 {
 		status.Articles.Total = rowInt(rows[0], "total")

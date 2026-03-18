@@ -77,9 +77,7 @@ function Cmd-Server {
         if ($toml -match '(?m)^\s*port\s*=\s*(\d+)')     { $serverPort = $Matches[1] }
     }
 
-    Write-Host "Starting HTTP server ..." -ForegroundColor Cyan
-    Write-Host "Open in browser --> " -NoNewline -ForegroundColor Cyan
-    Write-Host "http://${serverHost}:${serverPort}" -ForegroundColor Green
+    Write-Host "Loading RSS-Lance server (please wait) ..." -ForegroundColor Cyan
     Write-Host ""
 
     $serverArgs = @()

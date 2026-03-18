@@ -28,6 +28,19 @@
 html, body, #app { height: 100%; overflow: hidden; }
 body { font-family: var(--font); background: var(--bg); color: var(--text); font-size: 14px; }
 
+/* ── Thin scrollbars (VS Code style) ─────────────────────────── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,.15);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.3); }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* Firefox */
+* { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.15) transparent; }
+
 button { cursor: pointer; border: none; background: none; color: inherit; font-family: inherit; }
 a      { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }

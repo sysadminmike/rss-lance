@@ -151,6 +151,7 @@ function setupObservers() {
       // Fire when the element leaves the viewport going upward
       if (!entry.isIntersecting && entry.boundingClientRect.top < entry.rootBounds.top) {
         if (_suppressAutoRead) continue;   // skip during programmatic scroll
+        if (localStorage.getItem('rss-lance-auto-read') === 'off') continue;
         _readObserver.unobserve(entry.target);
         autoMarkRead(entry.target.dataset.articleId);
       }

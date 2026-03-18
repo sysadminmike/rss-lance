@@ -63,6 +63,9 @@ export function hideSettingsPage() {
   if (localStorage.getItem('rss-lance-middle-pane') === 'hidden') {
     document.getElementById('app').classList.add('hide-middle-pane');
   }
+  if (localStorage.getItem('rss-lance-auto-read') === 'off') {
+    // auto-read was off; reader.js checks localStorage directly
+  }
 }
 
 export function isSettingsPageVisible() { return _settingsVisible; }
@@ -150,10 +153,6 @@ function renderSettingsPage(container, settings) {
     }
   ];
 
-  // Appearance toggles (dark mode, article list)
-  const savedTheme = localStorage.getItem('rss-lance-theme');
-  const savedMiddle = localStorage.getItem('rss-lance-middle-pane');
-
   container.innerHTML = `
     <div class="settings-page-inner">
       <h1 class="settings-page-title">Settings</h1>
@@ -167,7 +166,7 @@ function renderSettingsPage(container, settings) {
           </div>
           <label class="toggle-switch toggle-sm">
             <input type="checkbox" id="sp-toggle-theme"
-              ${savedTheme !== 'light' ? 'checked' : ''}>
+              ${settings['ui.theme'] !== 'light' ? 'checked' : ''}>
             <span class="toggle-slider"></span>
           </label>
         </div>
@@ -178,7 +177,18 @@ function renderSettingsPage(container, settings) {
           </div>
           <label class="toggle-switch toggle-sm">
             <input type="checkbox" id="sp-toggle-middle"
-              ${savedMiddle !== 'hidden' ? 'checked' : ''}>
+              ${settings['ui.show_article_list'] !== false ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="log-option-row">
+          <div class="log-option-info">
+            <span class="log-option-label">Auto-read on scroll</span>
+            <span class="log-option-desc">Automatically mark articles as read when they scroll out of view</span>
+          </div>
+          <label class="toggle-switch toggle-sm">
+            <input type="checkbox" id="sp-toggle-autoread"
+              ${settings['ui.auto_read'] !== false ? 'checked' : ''}>
             <span class="toggle-slider"></span>
           </label>
         </div>
@@ -297,19 +307,31 @@ function renderSettingsPage(container, settings) {
     }
   });
 
-  // ---- Appearance toggles (dark mode, article list) ----
+  // ---- Appearance toggles (save to server + cache in localStorage) ----
   const themeToggle = document.getElementById('sp-toggle-theme');
   if (themeToggle) {
-    themeToggle.addEventListener('change', () => {
+    themeToggle.addEventListener('change', async () => {
+      const theme = themeToggle.checked ? 'dark' : 'light';
       document.body.classList.toggle('light-theme', !themeToggle.checked);
-      localStorage.setItem('rss-lance-theme', themeToggle.checked ? 'dark' : 'light');
+      localStorage.setItem('rss-lance-theme', theme);
+      try { await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify({ 'ui.theme': theme }) }); } catch (_) {}
     });
   }
   const middleToggle = document.getElementById('sp-toggle-middle');
   if (middleToggle) {
-    middleToggle.addEventListener('change', () => {
-      document.getElementById('app').classList.toggle('hide-middle-pane', !middleToggle.checked);
-      localStorage.setItem('rss-lance-middle-pane', middleToggle.checked ? 'visible' : 'hidden');
+    middleToggle.addEventListener('change', async () => {
+      const show = middleToggle.checked;
+      document.getElementById('app').classList.toggle('hide-middle-pane', !show);
+      localStorage.setItem('rss-lance-middle-pane', show ? 'visible' : 'hidden');
+      try { await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify({ 'ui.show_article_list': show }) }); } catch (_) {}
+    });
+  }
+  const autoReadToggle = document.getElementById('sp-toggle-autoread');
+  if (autoReadToggle) {
+    autoReadToggle.addEventListener('change', async () => {
+      const on = autoReadToggle.checked;
+      localStorage.setItem('rss-lance-auto-read', on ? 'on' : 'off');
+      try { await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify({ 'ui.auto_read': on }) }); } catch (_) {}
     });
   }
 

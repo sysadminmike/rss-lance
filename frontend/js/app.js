@@ -291,7 +291,7 @@ function initSettings() {
 
   otherSection.appendChild(otherHeader);
   otherSection.appendChild(otherItems);
-  sidebar.appendChild(otherSection);
+  document.getElementById('feed-list').appendChild(otherSection);
 }
 
 // ── Pane resize handles ──────────────────────────────────────────────────────
@@ -366,6 +366,21 @@ function initPaneResize() {
     await origLoadFeeds();
   };
   await window.__rlLoadFeeds();
+
+  // Sync appearance settings from server → localStorage cache
+  try {
+    const s = await apiFetch('/api/settings');
+    const theme = s['ui.theme'] ?? 'dark';
+    localStorage.setItem('rss-lance-theme', theme);
+    document.body.classList.toggle('light-theme', theme === 'light');
+
+    const showList = s['ui.show_article_list'] !== false;
+    localStorage.setItem('rss-lance-middle-pane', showList ? 'visible' : 'hidden');
+    document.getElementById('app').classList.toggle('hide-middle-pane', !showList);
+
+    const autoRead = s['ui.auto_read'] !== false;
+    localStorage.setItem('rss-lance-auto-read', autoRead ? 'on' : 'off');
+  } catch (_) {}
 
   // Pre-select "All Articles" on boot — this triggers onFeedSelect which
   // calls setFeed + showArticle, so no need to duplicate that here.

@@ -39,15 +39,15 @@ LanceDB uses **MVCC (multi-version concurrency control)** across multiple files.
 The **Python fetcher** (writer) and the **Go server** (reader/writer) are completely independent programs that operate on the same Lance files. They don't talk to each other - they don't even need to run on the same machine. There is no process sitting between your programs and your data. The files *are* the database.
 
 ```
-  ┌──────────────┐                              ┌──────────────┐
-  │ Feed Fetcher  │──writes──►  data/*.lance  ◄──reads──│  Go Server   │
-  │   (Python)    │            (just files)              │  (serves UI) │
-  └──────────────┘                              └──────────────┘
-        ▲                                              ▲
-        │              independent processes            │
-        │              no shared runtime                │
-        │              no database server               │
-        └──────────── can run on different machines ────┘
+  +--------------+                                     +--------------+
+  | Feed Fetcher |--writes-->  data/*.lance  <--reads--| Go Server    |
+  |   (Python)   |            (just files)             | (serves UI)  |
+  +--------------+                                     +--------------+
+        |                                               |
+        |              independent processes            |
+        |              no shared runtime                |
+        |              no database server               |
+        +------------ can run on different machines ----+
 ```
 
 ### Cloud Storage = Cloud Security
@@ -195,11 +195,11 @@ This defence-in-depth approach means that even if one layer is bypassed, the oth
 
 ### DB Table Viewer
 
-Browse raw database tables via **Other → DB Tables** in the sidebar. Select any table to see its data with Prev/Next pagination. The page size defaults to 200 rows and can be changed with `table_page_size` under `[server]` in `config.toml`.
+Browse raw database tables via **Other → DB Tables** in the sidebar. Select any table to see its data with Prev/Next pagination. The page size defaults to 200 rows and can be changed in **Other → Advanced Settings** under **Server → Table viewer page size**.
 
 ### Custom CSS
 
-Override any UI styling via the built-in CSS editor. Open **Other → Advanced Settings** in the sidebar, enter your CSS rules, and click Save - changes are applied instantly without reloading. Your custom CSS is stored in the database, so it's included in backups and follows your data if you move it to another machine. See [docs/configuration.md](docs/configuration.md#custom-css) for details.
+Override any UI styling via the built-in CSS editor. Open **Other →  Settings** in the sidebar, enter your CSS rules, and click Save - changes are applied instantly without reloading. Your custom CSS is stored in the database, so it's included in backups and follows your data if you move it to another machine. See [docs/configuration.md](docs/configuration.md#custom-css) for details.
 
 ---
 

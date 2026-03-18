@@ -3,7 +3,6 @@
 ## Project Overview
 
 RSS-Lance is a self-hosted single-user RSS reader using LanceDB for storage.  
-See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for full architecture and decisions.
 
 ---
 
@@ -76,10 +75,10 @@ This requires a pre-built native static library linked via CGo.
 
 - **Pre-built library:** `server/lib/windows_amd64/liblancedb_go.a` (~350 MB, GNU archive format)
 - **C header:** `server/include/lancedb.h`
-- **Local fork:** `server/lancedb-go/` (git submodule → https://github.com/sysadminmike/lancedb-go) - fork of lancedb-go v0.1.2 with:
-  - `pkg/internal/table.go` line 187: `C.ulong(len(ipcBytes))` → `C.size_t(len(ipcBytes))`
+- **Fork:** `server/_lancedb-go/` directory holds the forked lancedb-go source (https://github.com/sysadminmike/lancedb-go) - fork of lancedb-go v0.1.2 with:
+  - `pkg/internal/table.go` line 187: `C.ulong(len(ipcBytes))` -> `C.size_t(len(ipcBytes))`
   - Fixes type mismatch: on Windows `unsigned long` is 32-bit but `size_t` is 64-bit
-- **go.mod replace:** `replace github.com/lancedb/lancedb-go => ./lancedb-go`
+- **go.mod replace:** `replace github.com/lancedb/lancedb-go => github.com/sysadminmike/lancedb-go v0.0.0-20260317063623-767933bdbab9` (points to the GitHub fork, not a local path)
 - **CGo flags (Windows):**
   ```
   CGO_ENABLED=1
@@ -100,7 +99,7 @@ This requires a pre-built native static library linked via CGo.
 
 > **Rarely needed.** Only rebuild if modifying the Rust/C FFI layer or if the pre-built `.a` is missing.
 
-The Rust source lives in `server/lancedb-go/rust/` (Cargo.toml points to lancedb git tag v0.22.1).
+The Rust source lives in `server/_lancedb-go/rust/` (Cargo.toml points to lancedb git tag v0.22.1).
 
 **Windows prerequisites (MSYS2 UCRT64 terminal):**
 
@@ -161,9 +160,11 @@ cd server
 | `run-server` | Start the HTTP server |
 | `demo-data` | Insert demo RSS feeds into LanceDB for testing |
 | `duckdb` | Download DuckDB CLI into tools/ |
-| `migrate` | One-off TT-RSS Postgres → LanceDB import (installs psycopg2) |
+| `migrate` | One-off TT-RSS Postgres -> LanceDB import (installs psycopg2) |
 | `migrate-cleanup` | Remove migrate scripts and Postgres deps after import |
+| `test` | Run test suites (delegates to test.ps1/test.sh) |
 | `clean` | Remove `build/` directory |
+| `release` | Build server, package zip with exe + duckdb + frontend + fetcher + config + run scripts |
 | `build-minimum` | Bare minimum to run the app (setup + duckdb + server). No tests, no demo data, no Node.js needed |
 | `all` | Full build (setup + duckdb + server + demo-data) |
 | `help` | Show available commands |
@@ -179,7 +180,12 @@ These are the scripts users interact with after building. Copied to `-Dir` targe
 | `server` | Start the HTTP server (http://127.0.0.1:8080) |
 | `demo-data` | Insert demo RSS feeds for testing |
 | `add-feed <url>` | Add a single RSS/Atom feed URL |
+| `datafix` | Run retroactive article fixes (strip-chrome, strip-social) |
+| `export-opml` | Export feeds to OPML 2.0 file |
+| `benchmark` | Run performance benchmarks (insert, sanitize, pipeline, read) |
 | `help` | Show available commands |
+
+Options: `-DebugLog <categories>` (PS) / `--debug <categories>` (sh), `-Port <number>` / `--port <number>`
 
 ---
 
@@ -187,37 +193,46 @@ These are the scripts users interact with after building. Copied to `-Dir` targe
 
 ```
 rss-lance/
-├── .venv/              # Python virtual environment (NOT in git)
-├── build/              # Compiled Go binaries (NOT in git)
-├── data/               # LanceDB tables at runtime (NOT in git)
-├── fetcher/            # Python feed fetcher daemon
-├── migrate/            # TT-RSS / FreshRSS / Miniflux / OPML migration scripts
-├── server/             # Go HTTP server
-│   ├── api/            # REST API handlers
-│   ├── db/             # Hybrid DuckDB (reads) + lancedb-go (writes)
-│   │   ├── store.go        # Store interface
-│   │   ├── cache.go        # Write cache + CTE overlay
-│   │   ├── lance_writer.go # Shared CUD via lancedb-go native SDK
-│   │   ├── lance_windows.go # Windows: DuckDB CLI reads
-│   │   └── lance_cgo.go    # Non-Windows (Linux/FreeBSD/macOS): embedded DuckDB reads
-│   ├── debug/          # Debug logging & HTTP middleware
-│   ├── include/        # lancedb.h C header for CGo FFI
-│   ├── lib/            # Pre-built native libraries (per-platform)
-│   │   └── windows_amd64/liblancedb_go.a
-│   ├── lancedb-go/     # Forked lancedb-go SDK (git submodule, C.ulong→C.size_t fix)
-│   │   ├── pkg/        # Go bindings
-│   │   └── rust/       # Rust source (Cargo.toml → lancedb v0.22.1)
-│   ├── build-native.ps1 # Rebuild native lib from Rust (rarely needed)
-│   └── build-native.cmd # Same, for CMD
-├── frontend/           # Static HTML/CSS/JS frontend
-├── build.ps1           # Windows build script
-├── build.sh            # Linux/FreeBSD build script
-├── run.ps1             # Windows runtime commands (daily use)
-├── run.sh              # Linux/FreeBSD runtime commands (daily use)
-├── config.toml         # Runtime configuration (create from template)
-├── .gitignore
-├── IMPLEMENTATION_PLAN.md
-└── AGENT.md            # This file
+|-- .venv/              # Python virtual environment (NOT in git)
+|-- build/              # Compiled Go binaries (NOT in git)
+|-- data/               # LanceDB tables at runtime (NOT in git)
+|-- fetcher/            # Python feed fetcher daemon
+|-- migrate/            # TT-RSS / FreshRSS / Miniflux / OPML migration scripts
+|-- server/             # Go HTTP server
+|   |-- api/            # REST API handlers
+|   |-- db/             # Hybrid DuckDB (reads) + lancedb-go (writes)
+|   |   |-- store.go        # Store interface + all struct types
+|   |   |-- cache.go        # Write cache + CTE overlay
+|   |   |-- logbuffer.go    # Buffered log writer (batch flush)
+|   |   |-- lance_writer.go # Shared CUD via lancedb-go native SDK
+|   |   |-- lance_windows.go # Windows: DuckDB CLI reads
+|   |   +-- lance_cgo.go    # Non-Windows (Linux/FreeBSD/macOS): embedded DuckDB reads
+|   |-- debug/          # Debug logging & HTTP middleware
+|   |-- include/        # lancedb.h C header for CGo FFI
+|   |-- lib/            # Pre-built native libraries (per-platform)
+|   |   +-- windows_amd64/liblancedb_go.a
+|   |-- _lancedb-go/    # Forked lancedb-go SDK source (C.ulong->C.size_t fix)
+|   |   |-- pkg/        # Go bindings
+|   |   +-- rust/       # Rust source (Cargo.toml -> lancedb v0.22.1)
+|   |-- build-native.ps1 # Rebuild native lib from Rust (rarely needed)
+|   +-- build-native.cmd # Same, for CMD
+|-- frontend/           # Static HTML/CSS/JS frontend
+|-- tools/              # DuckDB CLI binary (downloaded at build time)
+|-- build.ps1           # Windows build script
+|-- build.sh            # Linux/FreeBSD build script
+|-- run.ps1             # Windows runtime commands (daily use)
+|-- run.sh              # Linux/FreeBSD runtime commands (daily use)
+|-- test.ps1            # Windows test runner
+|-- test.sh             # Linux/FreeBSD test runner
+|-- e2e_test.py         # End-to-end integration test (250 checks)
+|-- benchmark.py        # Performance benchmarks (insert, sanitize, read)
+|-- config.toml         # Runtime configuration (create from template)
+|-- docker-compose.yml  # Docker compose (server + fetcher + tools)
+|-- Dockerfile          # Multi-stage Docker build
+|-- pyproject.toml      # pytest configuration
+|-- .gitignore
+|-- IMPLEMENTATION_PLAN.md
++-- AGENT.md            # This file
 ```
 
 ---
@@ -244,13 +259,18 @@ Tests also run automatically as part of `build.ps1 all` / `build.sh all`. To ski
 
 `e2e_test.py` is a standalone script (separate from the unit test suite) that exercises the full stack:
 
-1. Starts a local HTTP server serving static RSS XML (2 feeds, 8 articles)
+1. Starts a local HTTP server serving static RSS XML (3 feeds: Alpha=3, Bravo=5, Sanitize=6 = 14 articles)
 2. Populates LanceDB using the Python fetcher's DB module
-3. Verifies data via DuckDB CLI
-4. Starts the real `rss-lance-server.exe` with a temp config
-5. Hits every API endpoint like the frontend would
-6. Verifies read/star state changes, pagination, sorting, filtering
-7. Checks final DB state via DuckDB
+3. Verifies sanitization pipeline (tracking pixels, social links, tracking params, scripts, site chrome)
+4. Verifies fetcher log writes via DuckDB
+5. Verifies initial data via DuckDB
+6. Starts the real `rss-lance-server.exe` with a temp config
+7. Hits every API endpoint like the frontend would
+8. Verifies read/star state changes, pagination, sorting, filtering
+9. Tests log settings, trimming (count + age modes), retention
+10. Tests custom CSS settings (set, update, clear, batch)
+11. Tests config endpoint and shutdown API (restart with show_shutdown=true)
+12. Checks final DB state via DuckDB
 
 **Prerequisites:** `build/rss-lance-server.exe` (run `build.ps1 server`) and `tools/duckdb.exe` (run `build.ps1 duckdb`).
 
@@ -261,16 +281,18 @@ python e2e_test.py --verbose    # show HTTP request/response details
 python e2e_test.py --keep       # preserve temp dir for debugging
 ```
 
-**73 checks** covering: feed/article listing, single feed/article, mark read/unread, star/unstar, mark-all-read, unread filtering, sorting, pagination, error handling, categories, queue feed, and DuckDB state verification.
+**250 checks** across 37 test sections covering: prerequisites, setup, local RSS server, populate data, sanitization (chrome/tracking/scripts), fetcher log writes, DuckDB verification, server startup, feed listing, single feed, article listing, articles by feed, view article, batch fetch, mark read/unread, unread filter, star/unstar, mark-all-read, multiple state changes (cache), DB status, server runtime status, final global state, categories, sorting, pagination, log settings, log trimming (count mode), log trimming (age mode), settings DB verification, custom CSS, error handling, final DuckDB verification, queue feed, logs API endpoint, config (show_shutdown), and shutdown API.
 
 ### Test File Locations
 
 | Suite | Location | Framework | What it tests |
 |---|---|---|---|
-| Python fetcher | `fetcher/tests/test_*.py` | pytest | Feed parsing, config, tiers, DB integration (real LanceDB in temp dirs) |
+| Python fetcher | `fetcher/tests/test_*.py` | pytest | Feed parsing, config, tiers, content cleaner, DB integration (real LanceDB in temp dirs) |
 | Go API | `server/api/api_test.go` | go test | All REST endpoints via mock Store (no CGo needed in test logic, but CGo required to compile because of transitive `db` import) |
-| Go DB | `server/db/store_test.go` | go test | SQL escaping, JSON field validation |
+| Go DB | `server/db/store_test.go` | go test | SQL escaping (8 cases), Feed/Article struct JSON field validation (6 tests) |
 | Frontend | `frontend/tests/*.test.js` | Jest + jsdom | Sanitization, time formatting, feed activity, DOM structure, API patterns |
+| OPML roundtrip | `migrate/test_opml_roundtrip.py` | pytest | Export -> import -> verify round-trip |
+| E2E integration | `e2e_test.py` | standalone | Full-stack: 250 checks across all services |
 
 ### CGo Dependency for Go Tests
 
@@ -299,8 +321,8 @@ The test runners parse output from pytest / go test / Jest and display unified `
          expected 200, got 500
 
   TEST SUMMARY
-  Total:   99 tests
-  Passed:  98
+  Total:   258 tests
+  Passed:  257
   Failed:  1
 ```
 
@@ -351,10 +373,19 @@ This means **every runtime command** (`run-fetcher`, `fetch-once`, `run-server`,
 
 When using `-Dir` to build into a separate directory, the build script **copies** the required runtime files (`fetcher/`, `frontend/`, `config.toml`) into the target so it becomes self-contained too. The `migrate/` scripts are **not** copied during setup - they are only copied on-demand when the user runs the `migrate` command, and can be removed afterwards with `migrate-cleanup`.
 
-### Migration is a one-off (TT-RSS import)
-The `migrate/` directory contains an import script for migrating from Tiny Tiny RSS (Postgres). It is **not** part of normal operation:
-- `migrate` command: copies scripts if needed, installs `psycopg2-binary` + `tqdm`, runs the import
-- `migrate-cleanup` command: deletes `migrate/` and uninstalls `psycopg2-binary` + `tqdm`
+### Migration tools (multi-format import/export)
+The `migrate/` directory contains scripts for importing from various RSS readers and exporting:
+- `import_ttrss.py` -- TT-RSS from Postgres (requires `psycopg2-binary`)
+- `import_freshrss.py` -- FreshRSS via Google Reader API
+- `import_miniflux.py` -- Miniflux via REST API
+- `import_opml.py` -- OPML file import (feeds + folder hierarchy, no articles)
+- `export_opml.py` -- Export feeds to OPML 2.0 file
+- `common.py` -- Shared framework (dataclasses, write helpers, duplicate detection)
+- `test_opml_roundtrip.py` -- pytest round-trip test
+
+Migration is **not** part of normal operation:
+- `migrate` command: copies scripts if needed, installs migration deps, runs the import
+- `migrate-cleanup` command: deletes `migrate/` and uninstalls extra deps
 - **Note:** `psycopg2-binary` is currently in `fetcher/requirements.txt` and gets installed during `setup`. Only `tqdm` is truly migrate-only.
 
 ### All state lives in LanceDB
@@ -371,12 +402,74 @@ All application state - feeds, articles, categories, read/starred status - is st
 ## Important Notes
 
 - **Execution policy (Windows):** PowerShell may block `.ps1` scripts. Run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` first.
-- **LanceDB tables** live in `data/` by default (configurable to S3 in `config.toml`).
+- **LanceDB tables** live in `data/` by default (configurable to S3 in `config.toml`). 7 tables: articles, feeds, categories, pending_feeds, settings, log_api, log_fetcher.
+- **DuckDB version** 1.5.0 (downloaded by `build.ps1 duckdb` into `tools/`).
 - **DuckDB Lance extension** cannot handle `UPDATE ... WHERE id IN (...)` (fails with "Lance UPDATE does not support UPDATE with joins or FROM") - this is why the Go server uses lancedb-go for writes.
 - **Single-user only** - no auth layer; each user runs their own instance.
 - **Cross-platform targets:** Windows amd64, Linux amd64/arm64, macOS amd64/arm64, FreeBSD amd64.
 - The Go server serves static files from `frontend/` and exposes a REST API under `/api/`.
 - When adding new Python dependencies, update `fetcher/requirements.txt` or `migrate/requirements.txt` accordingly.
+
+---
+
+## Docker
+
+Multi-stage Dockerfile (Go 1.23 build -> Python 3.12 pip install -> Python 3.12-slim final ~150MB):
+- Uses tini as init, runs as non-root `rss` user
+- Volume at `/data`, exposes port 8080
+- Patches config.toml for container environment (0.0.0.0, /data, /app/frontend)
+
+`docker-compose.yml` defines 4 services:
+- `server` -- Go HTTP server on port 8080
+- `fetcher` -- Python fetcher daemon (continuous)
+- `fetcher-once` -- One-shot fetch (tools profile)
+- `demo-data` -- Insert demo feeds (tools profile)
+- Shared volume `./data:/data`
+
+---
+
+## Benchmark
+
+`benchmark.py` provides 4 modes:
+- `insert` -- LanceDB write throughput (100-1000 articles x 10-250 feeds)
+- `sanitize` -- content_cleaner pipeline timing on 1000 articles
+- `pipeline` -- sanitize + insert end-to-end
+- `read` -- Go server API latency (populates 1000 feeds, queries at exponential offsets + per-feed scroll)
+
+Run via `run.ps1 benchmark <mode>` / `run.sh benchmark <mode>`.
+
+---
+
+## API Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/feeds` | List all feeds with unread counts |
+| POST | `/api/feeds` | Queue a new feed URL (202 Accepted) |
+| GET | `/api/feeds/:id` | Get single feed details |
+| DELETE | `/api/feeds/:id` | Delete feed (stub, returns 501) |
+| GET | `/api/feeds/:id/articles` | List articles for a feed |
+| POST | `/api/feeds/:id/mark-all-read` | Mark all articles in feed as read |
+| GET | `/api/articles/` | List all articles (supports ?unread=true, ?sort=asc/desc, ?limit, ?offset) |
+| GET | `/api/articles/:id` | Get single article with content |
+| POST | `/api/articles/batch` | Fetch multiple articles by ID |
+| POST | `/api/articles/:id/read` | Mark article as read |
+| POST | `/api/articles/:id/unread` | Mark article as unread |
+| POST | `/api/articles/:id/star` | Star article |
+| POST | `/api/articles/:id/unstar` | Unstar article |
+| GET | `/api/categories` | List categories |
+| GET | `/api/settings` | Get all settings |
+| PUT | `/api/settings` | Batch update settings |
+| GET | `/api/settings/:key` | Get single setting |
+| PUT | `/api/settings/:key` | Set single setting |
+| GET | `/api/status` | DB diagnostics (table sizes, row counts) |
+| GET | `/api/server-status` | Go runtime stats (memory, GC, goroutines, uptime, write cache) |
+| GET | `/api/server-status/history` | Time-series metrics (5s samples, 60min retention) |
+| GET | `/api/logs` | Combined logs with filters (?service, ?level, ?category, ?limit, ?offset) |
+| GET | `/api/tables/:name` | Raw table browser (articles, feeds, categories, pending_feeds, settings, log_api, log_fetcher) |
+| GET | `/api/config` | Public runtime config (show_shutdown flag) |
+| POST | `/api/shutdown` | Graceful shutdown (only when show_shutdown=true in config.toml) |
+| GET | `/css/custom.css` | Serves custom CSS from settings |
 
 ---
 

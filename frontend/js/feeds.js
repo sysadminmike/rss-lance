@@ -14,12 +14,18 @@ export function onFeedSelect(cb) { _onSelect = cb; }
 export function getSelectedFeedId() { return _selectedFeedId; }
 
 export async function loadFeeds() {
+  const other = document.getElementById('other-section');
+  if (other) other.remove();
   feedList.innerHTML = '<div class="loading-msg">Loading…</div>';
+  if (other) feedList.appendChild(other);
   try {
     _feeds = await apiFetch('/api/feeds');
     renderFeeds();
   } catch (e) {
+    const otherEl = document.getElementById('other-section');
+    if (otherEl) otherEl.remove();
     feedList.innerHTML = `<div class="loading-msg" style="color:var(--error)">Error: ${e.message}</div>`;
+    if (otherEl) feedList.appendChild(otherEl);
   }
 }
 
@@ -40,6 +46,10 @@ function renderFeeds() {
   const active  = _feeds.filter(f => isActiveFeed(f));
   const stale   = _feeds.filter(f => !isActiveFeed(f));
 
+  // Detach Other section before clearing so it survives innerHTML reset
+  const otherSection = document.getElementById('other-section');
+  if (otherSection) otherSection.remove();
+
   feedList.innerHTML = '';
 
   // All-articles shortcut
@@ -52,6 +62,9 @@ function renderFeeds() {
   if (stale.length) {
     feedList.appendChild(makeSection('older', 'Older Feeds', stale));
   }
+
+  // Re-append Other section after feed sections
+  if (otherSection) feedList.appendChild(otherSection);
 }
 
 function isActiveFeed(f) {

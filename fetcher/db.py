@@ -110,7 +110,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "compaction.log_fetcher":     20,
     "compaction.log_api":         20,
     "ui.theme":                   "dark",
-    "ui.hover_to_read":           False,
+    "ui.show_article_list":       True,
+    "ui.auto_read":               True,
     # ── Log settings: fetcher ──
     "log.fetcher.enabled":              True,
     "log.fetcher.fetch_cycle":          True,   # log each fetch cycle summary
