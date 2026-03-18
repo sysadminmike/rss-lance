@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Any
 
 # ── Paths ──────────────────────────────────────────────────────────────────
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 SERVER_BIN = ROOT / "build" / "rss-lance-server.exe"
 DUCKDB_BIN = ROOT / "tools" / "duckdb.exe"
 FETCHER_DIR = ROOT / "fetcher"

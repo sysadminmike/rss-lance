@@ -11,7 +11,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Load the actual index.html
-const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+const html = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'index.html'), 'utf8');
 
 beforeEach(() => {
   document.documentElement.innerHTML = html;

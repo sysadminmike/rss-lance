@@ -693,7 +693,7 @@ body.light-theme {
 }
 
 .status-title {
-  font-size: 24px;
+  font-size: 18px;
   font-weight: 700;
   margin-bottom: 4px;
 }
@@ -724,17 +724,17 @@ body.light-theme {
   text-align: center;
 }
 .stat-icon {
-  font-size: 22px;
-  margin-bottom: 6px;
+  font-size: 16px;
+  margin-bottom: 4px;
 }
 .stat-value {
-  font-size: 22px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--text);
   line-height: 1.2;
 }
 .stat-label {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: .5px;
@@ -891,8 +891,6 @@ body.light-theme {
   overflow-y: auto;
   background: var(--bg);
   padding: 32px 40px;
-  max-width: 900px;
-  margin: 0 auto;
 }
 
 .svs-chart-container {
@@ -1087,23 +1085,111 @@ body.light-theme {
 }
 
 /* ---- Log settings on settings page ---- */
-.log-section-header {
+.log-group-header {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   margin-bottom: 12px;
+  cursor: pointer;
+  user-select: none;
 }
-.log-section-header h2 { margin-bottom: 2px; }
+.log-group-header h2 { margin-bottom: 2px; }
+
+.log-group-arrow {
+  font-size: 10px;
+  display: inline-block;
+  transition: transform .2s ease;
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+  line-height: 24px;
+  color: var(--text-dim);
+}
+.log-group-header.expanded .log-group-arrow {
+  transform: rotate(90deg);
+}
+
+/* Advanced-settings collapsible subgroups */
+.adv-subgroup {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 12px;
+  margin-bottom: 8px;
+  background: var(--bg);
+}
+.adv-subgroup .log-group-header { margin-bottom: 0; }
+.adv-subgroup-body { padding-top: 8px; }
+
+.log-group-title-area {
+  flex: 1;
+  min-width: 0;
+}
+
+.log-group-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.log-group-state-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* 3-position mode control: All Off / Custom / All On */
+.log-mode-control {
+  display: flex;
+  gap: 0;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.log-mode-btn {
+  flex: 1;
+  padding: 5px 12px;
+  font-size: 12px;
+  border: none;
+  background: var(--bg2);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+  white-space: nowrap;
+  text-align: center;
+}
+.log-mode-btn + .log-mode-btn {
+  border-left: 1px solid var(--border);
+}
+.log-mode-btn:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+.log-mode-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+.log-mode-btn.active:hover {
+  filter: brightness(1.1);
+}
+
+/* Faded/locked options when in All Off or All On mode */
+.log-options-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: opacity .2s ease;
+}
+.log-options-list.options-locked {
+  opacity: 0.45;
+  pointer-events: none;
+}
 
 .log-options {
   display: flex;
   flex-direction: column;
   gap: 4px;
-}
-.log-options.disabled {
-  opacity: 0.4;
-  pointer-events: none;
 }
 
 .log-option-row {
@@ -1501,4 +1587,237 @@ tr.log-level-warn { background: rgba(224, 144, 48, 0.03); }
 .tv-page-info {
   font-size: 12px;
   color: var(--text-dim);
+}
+
+/* ── Offline status dot ─────────────────────────────────────────────────────── */
+#offline-dot {
+  position: fixed;
+  bottom: 10px;
+  left: 10px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  z-index: 200;
+  transition: background 0.4s ease;
+}
+#offline-dot.offline-dot-offline {
+  background: #f97316;
+}
+
+/* ── Offline banner ──────────────────────────────────────────────────────────── */
+.offline-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  text-align: center;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  transition: opacity 0.3s ease;
+}
+.offline-banner.hidden {
+  display: none;
+}
+.offline-banner-offline {
+  background: #b45309;
+  color: #fff;
+}
+.offline-banner-online {
+  background: #15803d;
+  color: #fff;
+}
+.reload-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  text-align: center;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  background: #1d4ed8;
+  color: #fff;
+}
+.reload-banner a {
+  color: #fff;
+  text-decoration: underline;
+}
+
+/* ── Duck Hunt easter egg ──────────────────────────────────────────────────── */
+
+.duck-hunt-trigger {
+  font-size: 1.4em;
+  text-align: center;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+#duck-hunt-page {
+  grid-column: 2 / -1;
+  overflow-y: auto;
+  background: var(--bg);
+  padding: 32px 40px;
+}
+
+.duck-hunt-inner {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.duck-hunt-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.duck-hunt-subtitle {
+  color: var(--text-dim);
+  font-size: 14px;
+  margin-bottom: 20px;
+}
+
+.duck-hunt-arena {
+  position: relative;
+  width: 100%;
+  height: 400px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: linear-gradient(180deg, #1a1a2e 0%, #16213e 40%, #0f3460 70%, #533483 100%);
+  border: 1px solid var(--border);
+}
+
+.light-theme .duck-hunt-arena {
+  background: linear-gradient(180deg, #87CEEB 0%, #98D8E8 40%, #B0E0E6 70%, #87CEEB 100%);
+}
+
+.duck-hunt-sky {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.duck-hunt-cloud {
+  position: absolute;
+  width: 80px;
+  height: 30px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 20px;
+}
+
+.light-theme .duck-hunt-cloud {
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.duck-hunt-ground {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 60px;
+  background: linear-gradient(180deg, #2d5016 0%, #1a3a0a 100%);
+}
+
+.light-theme .duck-hunt-ground {
+  background: linear-gradient(180deg, #4CAF50 0%, #388E3C 100%);
+}
+
+#duck-hunt-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: calc(100% - 60px);
+  z-index: 1;
+}
+
+.duck-hunt-result {
+  margin-top: 20px;
+  text-align: center;
+}
+
+.duck-hunt-hit, .duck-hunt-miss {
+  padding: 24px;
+  border-radius: 12px;
+  animation: duck-hunt-fadein 0.4s ease;
+}
+
+.duck-hunt-hit {
+  background: rgba(76, 175, 80, 0.15);
+  border: 1px solid rgba(76, 175, 80, 0.3);
+}
+
+.duck-hunt-miss {
+  background: rgba(244, 67, 54, 0.12);
+  border: 1px solid rgba(244, 67, 54, 0.25);
+}
+
+.duck-hunt-result-icon {
+  font-size: 48px;
+  margin-bottom: 8px;
+}
+
+.duck-hunt-result h2 {
+  font-size: 24px;
+  font-weight: 800;
+  margin: 0 0 8px;
+}
+
+.duck-hunt-hit h2 { color: #4CAF50; }
+.duck-hunt-miss h2 { color: #f44336; }
+
+.duck-hunt-result p {
+  margin: 4px 0;
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+.duck-hunt-quip {
+  font-family: monospace;
+  font-size: 12px !important;
+  opacity: 0.7;
+  margin-top: 8px !important;
+}
+
+.duck-hunt-footer {
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-top: 16px;
+  opacity: 0.6;
+}
+
+.duck-hunt-cooldown {
+  text-align: center;
+  padding: 60px 20px;
+}
+
+.duck-hunt-cooldown-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+}
+
+.duck-hunt-cooldown p {
+  font-size: 16px;
+  color: var(--text-dim);
+  margin: 8px 0;
+}
+
+.duck-hunt-timer strong {
+  color: var(--accent);
+  font-size: 20px;
+}
+
+.duck-hunt-hint {
+  font-size: 13px !important;
+  opacity: 0.5;
+  font-style: italic;
+}
+
+@keyframes duck-hunt-fadein {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
 }

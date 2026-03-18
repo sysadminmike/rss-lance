@@ -224,6 +224,12 @@ func (m *mockStore) GetDBStatus() (*db.DBStatus, error) {
 
 func (m *mockStore) CacheStats() (int, int) { return 0, 0 }
 
+func (m *mockStore) DuckDBProcessInfo() *db.DuckDBProcessInfo { return nil }
+
+func (m *mockStore) OfflineStatus() *db.OfflineStatus { return nil }
+
+func (m *mockStore) LogBufferStats() db.LogBufferStatus { return db.LogBufferStatus{} }
+
 func (m *mockStore) WriteLog(entry db.LogEntry) error { return nil }
 
 func (m *mockStore) GetLogs(opts db.LogQuery) ([]db.LogEntry, int, error) {
@@ -945,9 +951,9 @@ func TestGetStatusContentType(t *testing.T) {
 
 func TestServerStatusSuccess(t *testing.T) {
 	start := time.Now().Add(-10 * time.Second)
-	h := NewServerStatusHandler(start, func() CacheStatsInfo {
+	h := NewServerStatusHandler(start, "", "", func() CacheStatsInfo {
 		return CacheStatsInfo{PendingReads: 3, PendingStars: 1}
-	})
+	}, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/server-status", nil)
 	w := httptest.NewRecorder()
@@ -1019,7 +1025,7 @@ func TestServerStatusSuccess(t *testing.T) {
 }
 
 func TestServerStatusMethodNotAllowed(t *testing.T) {
-	h := NewServerStatusHandler(time.Now(), nil)
+	h := NewServerStatusHandler(time.Now(), "", "", nil, nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/server-status", nil)
 	w := httptest.NewRecorder()
@@ -1031,7 +1037,7 @@ func TestServerStatusMethodNotAllowed(t *testing.T) {
 }
 
 func TestServerStatusContentType(t *testing.T) {
-	h := NewServerStatusHandler(time.Now(), nil)
+	h := NewServerStatusHandler(time.Now(), "", "", nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/server-status", nil)
 	w := httptest.NewRecorder()
@@ -1044,7 +1050,7 @@ func TestServerStatusContentType(t *testing.T) {
 }
 
 func TestServerStatusNilCacheStats(t *testing.T) {
-	h := NewServerStatusHandler(time.Now(), nil)
+	h := NewServerStatusHandler(time.Now(), "", "", nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/server-status", nil)
 	w := httptest.NewRecorder()

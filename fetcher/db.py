@@ -128,6 +128,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "log.api.settings_changes":         True,   # settings changes
     "log.api.feed_actions":             True,   # add feed, mark-all-read, etc.
     "log.api.article_actions":          False,  # read/star individual articles (noisy)
+    "log.api.easter_eggs":               True,   # duck hunt and other easter eggs
     "log.api.errors":                   True,   # error responses
     # ── Log retention ──
     "log.max_entries":                  10000,

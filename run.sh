@@ -108,7 +108,7 @@ cmd_add_feed() {
 cmd_benchmark() {
     ensure_venv
     echo "Running benchmark ..."
-    python "$SCRIPT_DIR/benchmark.py" "$@"
+    python "$SCRIPT_DIR/tests/benchmark.py" "$@"
 }
 
 cmd_help() {

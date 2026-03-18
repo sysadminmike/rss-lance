@@ -224,7 +224,10 @@ function Build-Server {
     $env:CGO_CFLAGS  = "-I$ServerDir\include"
     $env:CGO_LDFLAGS = "-static $ServerDir\lib\windows_amd64\liblancedb_go.a -lws2_32 -luserenv -lntdll -lpthread"
 
-    go build -o "$BuildDir\rss-lance-server.exe" .
+    $buildTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $ldflags = "-X main.BuildTime=$buildTime"
+    if ($env:BUILD_VERSION) { $ldflags += " -X main.BuildVersion=$env:BUILD_VERSION" }
+    go build -ldflags "$ldflags" -o "$BuildDir\rss-lance-server.exe" .
 
     # Reset CGo env
     Remove-Item Env:\CGO_ENABLED -ErrorAction SilentlyContinue
@@ -249,7 +252,10 @@ function Build-ServerAll {
     $env:CGO_ENABLED = "1"
     $env:CGO_CFLAGS  = "-I$ServerDir\include"
     $env:CGO_LDFLAGS = "-static $ServerDir\lib\windows_amd64\liblancedb_go.a -lws2_32 -luserenv -lntdll -lpthread"
-    go build -o "$BuildDir\$outName" .
+    $buildTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $ldflags = "-X main.BuildTime=$buildTime"
+    if ($env:BUILD_VERSION) { $ldflags += " -X main.BuildVersion=$env:BUILD_VERSION" }
+    go build -ldflags "$ldflags" -o "$BuildDir\$outName" .
 
     # Cross-compiled targets -- CGo disabled (need native libs per-platform in CI)
     $crossTargets = @(

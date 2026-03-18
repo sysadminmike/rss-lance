@@ -9,40 +9,72 @@ RSS-Lance is a self-hosted single-user RSS reader using LanceDB for storage.
 ## Environment Setup
 
 ### Coding Hints
-- NEVER use the em dash character. It causes problems in code/shell scripts. If you see it when working on files, change it to "-".  Also NEVER use it in md files or other documentation.
-- Avoid using non standard ascii chars in code/shell scripts other than making echo/print/output nicer.
+- **NEVER use non-ASCII characters in code, shell scripts** This includes em dashes, curly quotes, ellipsis characters, multiplication signs, arrows, checkmarks, etc. They cause encoding problems in PowerShell scripts, shell scripts, TOML files, and Go source. Use only plain ASCII equivalents: `-` or `--` instead of em/en dashes, `*` or `x` instead of multiplication signs, `->` instead of arrows, `...` (three dots) instead of ellipsis. The ONLY exception is echo/print/Write-Host output strings where UTF-8 characters are acceptable for display purposes (e.g. progress indicators, emoji in status messages). If you see non-ASCII characters when editing files, replace them with ASCII equivalents immediately.
+- **NEVER use em dashes in documentation**.
 - When you update code, also update IMPLEMENTATION_PLAN.md, README.md, and AGENT.md and documentation in docs/ to keep documentation in sync, also update tests to keep them in sync.
 - Check windows machine as it could have windows system for linux so bash and other gnu tools may be avaliable
+- **For installing software on Windows, ask the user directly.** Provide the download link, explain what the tool is for in one sentence, and let the user install it. This is faster than trying multiple automated approaches. For example: "Please install MSYS2 from https://www.msys2.org/ -- it provides GCC needed to compile the Go server via CGo."
 - **All new features MUST include structured logging.** Every user-facing action (API endpoint, feed operation, settings change) should emit a log entry via the logging system. Use the appropriate logger: `db.log_event()` in Python, `logger.Log()`/`logger.LogJSON()` in Go. See [docs/logging.md](docs/logging.md) and the [Structured Logging System](#structured-logging-system) section below.
 - **All new features MUST update `e2e_test.py`.** When adding a new feature, add E2E test checks that verify both the feature itself AND that the expected log entries were generated. Query `/api/logs` with appropriate filters to confirm log entries exist after the action.
 
 ### IMPORTANT: Do NOT run `go test` directly
+
 The Go server requires CGo with specific linker flags (`liblancedb_go.a`, `-lws2_32`, etc.)
 and MSYS2 GCC. Running `go test ./...` or `cd server; go test ./api` **will fail** with
 CGo linker errors (undefined references to lancedb symbols, missing `-lws2_32`, etc.).
 
-### IMPORTANT: There is a python virtual environment in .venv
+**Similarly, do NOT run `go build` directly.** Always use `build.ps1 server` or `build.sh server`
+which set up the correct CGo environment automatically.
 
-**Always use the test scripts instead:**
+**Always use the build/test scripts instead:**
 ```powershell
+.\build.ps1 server   # Windows - build with correct CGo flags
 .\test.ps1 go        # Windows - runs all Go tests with correct CGo flags
 .\test.ps1 api       # Windows - runs only Go API tests
 ./test.sh go         # Linux/macOS
 ```
 
-The test scripts (`test.ps1` / `test.sh`) automatically:
+The build and test scripts (`build.ps1` / `test.ps1` / `test.sh`) automatically:
 1. Locate MSYS2 GCC and add it to PATH
 2. Set `CGO_ENABLED=1`, `CGO_CFLAGS`, and `CGO_LDFLAGS` with the correct library paths
-3. Run `go test` with the proper environment
+3. Run `go build` or `go test` with the proper environment
 
-If you need to verify Go code compiles, use `.\build.ps1 server` instead of `go build`.
-This is a **hard requirement** - there is no workaround short of extracting the `Store`
-interface into a CGo-free package (planned but not yet done).
+This is a **hard requirement** - there is no workaround short of extracting the `Store` interface into a CGo-free package (planned but not yet done).
+
+Do NOT delete `server/lib/windows_amd64/liblancedb_go.a` -- rebuilding it from Rust source takes ~20 minutes. Avoid `clean` operations or file deletions that would remove this pre-built static library. If the file already exists, preserve it.
+
+### IMPORTANT: Python virtual environment is in .venv
+
+The Python virtual environment lives at `.venv/` in the project root. **You must activate it
+or use its Python binary directly** before running any Python commands. Running `python` or
+`pip` without activation will use the system Python, which won't have the required packages.
+
+**Quick activation:**
+```powershell
+# Windows PowerShell
+.\. .venv\Scripts\Activate.ps1
+
+# Linux/macOS/FreeBSD
+source .venv/bin/activate
+```
+
+**Or use the binary directly (no activation needed):**
+```powershell
+# Windows
+.\.venv\Scripts\python.exe tests/e2e_test.py
+.\.venv\Scripts\pip.exe install -r fetcher/requirements.txt
+
+# Linux
+.venv/bin/python tests/e2e_test.py
+```
+
+The build scripts (`build.ps1 setup` / `build.sh setup`) create the venv and install
+dependencies. If `.venv/` doesn't exist, run `build.ps1 setup` first.
 
 ### Python Virtual Environment
 
 - **Location:** `.venv/` in project root
-- **Python version:** 3.12+ (Dockerfile uses 3.12)
+- **Python version:** 3.10+ (Dockerfile uses 3.12)
 - **Activate (Windows PowerShell):**
   ```powershell
   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
@@ -205,7 +237,8 @@ rss-lance/
 |   |   |-- cache.go        # Write cache + CTE overlay
 |   |   |-- logbuffer.go    # Buffered log writer (batch flush)
 |   |   |-- lance_writer.go # Shared CUD via lancedb-go native SDK
-|   |   |-- lance_windows.go # Windows: DuckDB CLI reads
+|   |   |-- duckdb_process.go # Persistent duckdb.exe subprocess (Windows only)
+|   |   |-- lance_windows.go # Windows: DuckDB CLI reads (thin wrapper over duckdb_process)
 |   |   +-- lance_cgo.go    # Non-Windows (Linux/FreeBSD/macOS): embedded DuckDB reads
 |   |-- debug/          # Debug logging & HTTP middleware
 |   |-- include/        # lancedb.h C header for CGo FFI
@@ -217,6 +250,16 @@ rss-lance/
 |   |-- build-native.ps1 # Rebuild native lib from Rust (rarely needed)
 |   +-- build-native.cmd # Same, for CMD
 |-- frontend/           # Static HTML/CSS/JS frontend
+|-- tests/              # All tests consolidated here
+|   |-- python/         # Python unit + integration tests (pytest)
+|   |   |-- test_config.py, test_content_cleaner.py, test_db.py
+|   |   |-- test_duckdb_persistent.py, test_feed_parser.py
+|   |   |-- test_opml_roundtrip.py, test_tiers.py
+|   |-- frontend/       # Frontend Jest tests
+|   |   +-- api.test.js, dom.test.js, feeds.test.js, relativeTime.test.js, sanitise.test.js
+|   |-- e2e_test.py     # End-to-end integration test
+|   |-- stress_test.py  # Stress & security test suite
+|   +-- benchmark.py    # Performance benchmarks (insert, sanitize, read)
 |-- tools/              # DuckDB CLI binary (downloaded at build time)
 |-- build.ps1           # Windows build script
 |-- build.sh            # Linux/FreeBSD build script
@@ -224,8 +267,6 @@ rss-lance/
 |-- run.sh              # Linux/FreeBSD runtime commands (daily use)
 |-- test.ps1            # Windows test runner
 |-- test.sh             # Linux/FreeBSD test runner
-|-- e2e_test.py         # End-to-end integration test (250 checks)
-|-- benchmark.py        # Performance benchmarks (insert, sanitize, read)
 |-- config.toml         # Runtime configuration (create from template)
 |-- docker-compose.yml  # Docker compose (server + fetcher + tools)
 |-- Dockerfile          # Multi-stage Docker build
@@ -241,6 +282,7 @@ rss-lance/
 
 The project has tests covering all three layers: Python fetcher, Go API/DB, and frontend JS.
 There is also a standalone end-to-end integration test.
+See [docs/testing.md](docs/testing.md) for running instructions and suite details.
 
 ### Running Tests
 
@@ -257,7 +299,7 @@ Tests also run automatically as part of `build.ps1 all` / `build.sh all`. To ski
 
 ### End-to-End Integration Test
 
-`e2e_test.py` is a standalone script (separate from the unit test suite) that exercises the full stack:
+`tests/e2e_test.py` is a standalone script (separate from the unit test suite) that exercises the full stack:
 
 1. Starts a local HTTP server serving static RSS XML (3 feeds: Alpha=3, Bravo=5, Sanitize=6 = 14 articles)
 2. Populates LanceDB using the Python fetcher's DB module
@@ -265,34 +307,30 @@ Tests also run automatically as part of `build.ps1 all` / `build.sh all`. To ski
 4. Verifies fetcher log writes via DuckDB
 5. Verifies initial data via DuckDB
 6. Starts the real `rss-lance-server.exe` with a temp config
-7. Hits every API endpoint like the frontend would
-8. Verifies read/star state changes, pagination, sorting, filtering
-9. Tests log settings, trimming (count + age modes), retention
-10. Tests custom CSS settings (set, update, clear, batch)
-11. Tests config endpoint and shutdown API (restart with show_shutdown=true)
-12. Checks final DB state via DuckDB
+7. **Verifies build version** -- if `--build-version` was given, checks `/api/server-status` `build_version` matches before running any API tests (catches stale binaries, concurrent builds)
+8. Hits every API endpoint like the frontend would
+9. Verifies read/star state changes, pagination, sorting, filtering
+10. Tests log settings, trimming (count + age modes), retention
+11. Tests custom CSS settings (set, update, clear, batch)
+12. Tests config endpoint and shutdown API (restart with show_shutdown=true)
+13. Checks final DB state via DuckDB
+14. **Post-failure checks** -- if tests fail and `--build-version` was given, re-checks server health to detect crashes or binary replacement
 
-**Prerequisites:** `build/rss-lance-server.exe` (run `build.ps1 server`) and `tools/duckdb.exe` (run `build.ps1 duckdb`).
-
-**Run:**
-```bash
-python e2e_test.py              # normal run
-python e2e_test.py --verbose    # show HTTP request/response details
-python e2e_test.py --keep       # preserve temp dir for debugging
-```
-
-**250 checks** across 37 test sections covering: prerequisites, setup, local RSS server, populate data, sanitization (chrome/tracking/scripts), fetcher log writes, DuckDB verification, server startup, feed listing, single feed, article listing, articles by feed, view article, batch fetch, mark read/unread, unread filter, star/unstar, mark-all-read, multiple state changes (cache), DB status, server runtime status, final global state, categories, sorting, pagination, log settings, log trimming (count mode), log trimming (age mode), settings DB verification, custom CSS, error handling, final DuckDB verification, queue feed, logs API endpoint, config (show_shutdown), and shutdown API.
+**~290 checks** across 39 test sections covering: prerequisites, setup, local RSS server, populate data, sanitization (chrome/tracking/scripts), fetcher log writes, DuckDB verification, server startup, **build version verification**, feed listing, single feed, article listing, articles by feed, view article, batch fetch, mark read/unread, unread filter, star/unstar, mark-all-read, multiple state changes (cache), DB status, server runtime status, final global state, categories, sorting, pagination, log settings, log trimming (count mode), log trimming (age mode), settings DB verification, custom CSS, error handling, final DuckDB verification, queue feed, logs API endpoint, config (show_shutdown), shutdown API, and **offline mode** (data disappear/recovery, skipped on Windows).
 
 ### Test File Locations
 
 | Suite | Location | Framework | What it tests |
 |---|---|---|---|
-| Python fetcher | `fetcher/tests/test_*.py` | pytest | Feed parsing, config, tiers, content cleaner, DB integration (real LanceDB in temp dirs) |
+| Python fetcher | `tests/python/test_*.py` | pytest | Feed parsing, config, tiers, content cleaner, DB integration (real LanceDB in temp dirs) |
 | Go API | `server/api/api_test.go` | go test | All REST endpoints via mock Store (no CGo needed in test logic, but CGo required to compile because of transitive `db` import) |
 | Go DB | `server/db/store_test.go` | go test | SQL escaping (8 cases), Feed/Article struct JSON field validation (6 tests) |
-| Frontend | `frontend/tests/*.test.js` | Jest + jsdom | Sanitization, time formatting, feed activity, DOM structure, API patterns |
-| OPML roundtrip | `migrate/test_opml_roundtrip.py` | pytest | Export -> import -> verify round-trip |
-| E2E integration | `e2e_test.py` | standalone | Full-stack: 250 checks across all services |
+| Frontend | `tests/frontend/*.test.js` | Jest + jsdom | Sanitization, time formatting, feed activity, DOM structure, API patterns |
+| OPML roundtrip | `tests/python/test_opml_roundtrip.py` | pytest | Export -> import -> verify round-trip |
+| DuckDB persistent | `tests/python/test_duckdb_persistent.py` | pytest | Persistent DuckDB process read performance vs CLI |
+| E2E integration | `tests/e2e_test.py` | standalone | Full-stack: ~290 checks across all services |
+| Stress test | `tests/stress_test.py` | standalone | Concurrency, rate limiting, security, chaos testing |
+| Benchmark | `tests/benchmark.py` | standalone | Insert, sanitize, pipeline, and read performance |
 
 ### CGo Dependency for Go Tests
 
@@ -302,14 +340,7 @@ See **"Do NOT run `go test` directly"** at the top of this file. The Go API test
 
 ### Frontend Tests (Node.js required)
 
-Frontend tests use Jest with jsdom. Node.js is **not** required to run the app -- only for running frontend tests. If Node.js/npm is not found, the test runner skips the frontend suite.
-
-To run frontend tests manually:
-```bash
-cd frontend
-npm install    # one-time
-npm test
-```
+Frontend tests use Jest with jsdom. Node.js is **not** required to run the app -- only for running frontend tests. If Node.js/npm is not found, the test runner skips the frontend suite. See [docs/testing.md](docs/testing.md) for running instructions.
 
 ### Test Output Format
 
@@ -346,7 +377,7 @@ The goal is to keep **everything in one directory**. After building, the user sh
 - `run.ps1` / `run.sh` -- daily-use commands
 
 **What the user must install globally (cannot live in the directory):**
-- **Python 3.12+** -- needed to run the fetcher
+- **Python 3.10+** -- needed to run the fetcher (Dockerfile uses 3.12)
 - **Go 1.23+** -- needed to compile the server (build time only, not runtime)
 - **GCC / MSYS2** -- needed to compile the server due to CGo (build time only, not runtime)
 
@@ -386,7 +417,7 @@ The `migrate/` directory contains scripts for importing from various RSS readers
 Migration is **not** part of normal operation:
 - `migrate` command: copies scripts if needed, installs migration deps, runs the import
 - `migrate-cleanup` command: deletes `migrate/` and uninstalls extra deps
-- **Note:** `psycopg2-binary` is currently in `fetcher/requirements.txt` and gets installed during `setup`. Only `tqdm` is truly migrate-only.
+- **Note:** `psycopg2-binary` is only in `migrate/requirements.txt` -- it is only needed for the TT-RSS PostgreSQL import (`import_ttrss.py`). It is NOT in `fetcher/requirements.txt`.
 
 ### All state lives in LanceDB
 All application state - feeds, articles, categories, read/starred status - is stored in **LanceDB tables** under the `data/` directory. There is no external database process; it's just files on disk (or S3). This means:
@@ -403,8 +434,26 @@ All application state - feeds, articles, categories, read/starred status - is st
 
 - **Execution policy (Windows):** PowerShell may block `.ps1` scripts. Run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` first.
 - **LanceDB tables** live in `data/` by default (configurable to S3 in `config.toml`). 7 tables: articles, feeds, categories, pending_feeds, settings, log_api, log_fetcher.
+- **DuckDB database file** (`server.duckdb`) lives in the data path by default. When data is on NFS/S3, set `duckdb_path` in `config.toml` to a local directory -- DuckDB requires local storage for reliable file locking. The server warns at startup if the DuckDB path is on a non-local filesystem.
 - **DuckDB version** 1.5.0 (downloaded by `build.ps1 duckdb` into `tools/`).
 - **DuckDB Lance extension** cannot handle `UPDATE ... WHERE id IN (...)` (fails with "Lance UPDATE does not support UPDATE with joins or FROM") - this is why the Go server uses lancedb-go for writes.
+- **DuckDB file locking on Windows:** DuckDB uses exclusive file locks on Windows, so only **one** DuckDB process can open the Lance data directory at a time. The persistent DuckDB process (see below) uses a **single** long-lived `duckdb.exe :memory: -json` process with queries serialized through it via stdin/stdout. Two-phase startup: (1) one-shot INSTALL to cache the extension, (2) persistent process with LOAD lance + ATTACH + verification query. The process auto-restarts if it dies (crash, OOM, user kill) -- detects broken pipe on write or EOF on read, kills old process, re-runs Phase 2, retries the failed query once. Go unit tests cover kill-and-restart scenarios. All process death/restart events are logged at ERROR level via `log.Printf("ERROR: ...")`.
+
+### WARNING: DuckDB Persistent Process Gotchas (Windows)
+
+The persistent `duckdb.exe` process (`server/db/duckdb_process.go`) communicates via stdin/stdout using a sentinel-based protocol. There are subtle bugs that can cause 30-second timeouts or protocol desync. **Read all of these before modifying the DuckDB process code:**
+
+1. **Semicolons are REQUIRED.** DuckDB interactive mode will NOT execute a statement until it sees a terminating `;`. The `sendAndRead()` method auto-appends one if missing, but any code that constructs SQL fed to this process must be aware. Without the semicolon, DuckDB silently waits for more input, the reader goroutine blocks, and the query times out after 30s.
+
+2. **Errored queries produce NO stdout output.** When a SQL query fails (e.g. table not found), DuckDB sends the error message to **stderr only** -- nothing goes to stdout. The sentinel `SELECT '__SENTINEL__' AS _s;` still succeeds and appears on stdout. This means `sendAndRead()` reads the sentinel as the "real result" and then waits forever for a second sentinel that never arrives. The fix: after reading the first result, check if it IS the sentinel (`isSentinelResult()`). If so, the real query errored -- return empty rows and skip the second read.
+
+3. **Multi-statement SQL (two semicolons) produces TWO result sets.** If someone sends `CREATE TABLE ...; SELECT ...;` as a single string, DuckDB outputs two JSON arrays. The reader would see the first as the real result and the second as the sentinel, then the actual sentinel has nothing to consume it -- desyncing all subsequent queries. **Always send exactly one statement per `query()` or `execStmt()` call.** CTEs (`WITH ... SELECT ...`) are fine because they are a single statement.
+
+4. **DuckDB `-json` mode outputs `[{]` for some Lance queries with zero rows.** This is not valid JSON. The `parseJSONRows()` function handles this quirk explicitly. If you see JSON parse errors on empty result sets, check for this pattern.
+
+5. **Process death is transparent to the API layer.** When `duckdb.exe` dies (kill, crash, OOM), the next `query()` or `execStmt()` call detects it (broken pipe on stdin write, or EOF on stdout read), auto-restarts the process, and retries the query once. The API handler never sees an error. All death/restart events log at ERROR level. If the restart itself fails, the error propagates up to the caller.
+
+6. **The reader goroutine tracks JSON bracket depth** including string-literal awareness (to avoid counting `[` inside strings). If you modify `readLoop()`, be careful with the `inString`/`escape` tracking -- getting it wrong causes the reader to split one JSON array into two or merge two arrays into one, desyncing the protocol.
 - **Single-user only** - no auth layer; each user runs their own instance.
 - **Cross-platform targets:** Windows amd64, Linux amd64/arm64, macOS amd64/arm64, FreeBSD amd64.
 - The Go server serves static files from `frontend/` and exposes a REST API under `/api/`.
@@ -413,6 +462,8 @@ All application state - feeds, articles, categories, read/starred status - is st
 ---
 
 ## Docker
+
+See [docs/docker.md](docs/docker.md) for user-facing deployment details.
 
 Multi-stage Dockerfile (Go 1.23 build -> Python 3.12 pip install -> Python 3.12-slim final ~150MB):
 - Uses tini as init, runs as non-root `rss` user
@@ -430,7 +481,7 @@ Multi-stage Dockerfile (Go 1.23 build -> Python 3.12 pip install -> Python 3.12-
 
 ## Benchmark
 
-`benchmark.py` provides 4 modes:
+`tests/benchmark.py` provides 4 modes:
 - `insert` -- LanceDB write throughput (100-1000 articles x 10-250 feeds)
 - `sanitize` -- content_cleaner pipeline timing on 1000 articles
 - `pipeline` -- sanitize + insert end-to-end
@@ -503,6 +554,7 @@ Both `log_api` and `log_fetcher` Lance tables share the same schema:
 | article_processing  | log.fetcher.article_processing     | Debug: each article processed         |
 | compaction          | log.fetcher.compaction             | Table compaction events               |
 | tier_changes        | log.fetcher.tier_changes           | Feed tier up/downgrades               |
+| sanitization        | log.fetcher.sanitization           | Debug: what the sanitizer stripped     |
 | errors              | log.fetcher.errors                 | Fetch errors and failures             |
 
 **API Server** (`log_api` table, written by Go server):
@@ -515,6 +567,18 @@ Both `log_api` and `log_fetcher` Lance tables share the same schema:
 | feed_actions       | log.api.feed_actions                | Add feed, mark-all-read, etc.         |
 | article_actions    | log.api.article_actions             | Read/star individual articles         |
 | errors             | log.api.errors                      | Error responses                       |
+| storage_events     | (always on)                         | Log storage failover/recovery events  |
+
+### 3-Tier Log Write Path
+
+The Go server buffers log entries in memory and flushes them through a 3-tier path:
+1. **Lance** (primary) -- `log_api.lance` via lancedb-go SDK
+2. **DuckDB** (fallback) -- `cached_logs` table in `offline_cache.db`
+3. **Memory** (last resort) -- entries stay in `logBuffer`, subject to `log.memory_cap` (default 100,000)
+
+A background drain goroutine moves `cached_logs` entries back to Lance when it recovers.
+Storage infrastructure events are captured in a `storage_events` category via an in-memory ring buffer.
+See [docs/logging.md](docs/logging.md#3-tier-log-write-path-go-server) for full details.
 
 ### How to Add Logging
 
@@ -555,6 +619,35 @@ Every new feature should include:
 - [ ] **E2E test checks** - verify the feature works AND that log entries appear via `/api/logs`
 - [ ] **Documentation** - update AGENT.md, IMPLEMENTATION_PLAN.md, and relevant docs/ files
 - [ ] **Settings toggle** (if new category) - add default in `db.py` + toggle in `settings-page.js`
+- [ ] **Settings in database** - new feature settings live in `DEFAULT_SETTINGS` (`fetcher/db.py`) + Settings UI (`settings-page.js`), NOT `config.toml` (unless needed for bootstrap -- see below)
+
+### Settings Placement: config.toml vs Settings Table
+
+See [docs/configuration.md](docs/configuration.md) for the user-facing config.toml reference.
+
+New feature settings **do NOT go in `config.toml`**. They belong in the Lance **settings table** (managed via the Settings page in the UI). `config.toml` is reserved exclusively for bootstrap settings -- things the application needs before it can open the Lance database.
+
+**config.toml (bootstrap only):**
+
+| Section | Keys | Why it must be in config.toml |
+|---|---|---|
+| `[storage]` | `type`, `path`, `duckdb_path`, `s3_region`, `s3_endpoint` | Needed to locate and open the Lance files; `duckdb_path` separates DuckDB from data path for NFS/S3 setups |
+| `[server]` | `host`, `port`, `frontend_dir` | Needed to bind the HTTP server and find static files |
+| `[server]` | `show_shutdown` | Admin/safety control for the shutdown route |
+| `[migration.*]` | connection strings, credentials | One-time import tools, not runtime features |
+
+**Settings table (everything else):**
+
+All runtime-configurable behavior lives in the settings table (`data/settings.lance/`), exposed via `GET/PUT /api/settings` and the Settings page. This includes: UI preferences, logging toggles, compaction thresholds, cache tuning, fetcher intervals, tier thresholds, custom CSS, and any future feature settings.
+
+**When adding a new feature setting:**
+
+1. Add the default value to `DEFAULT_SETTINGS` in `fetcher/db.py`
+2. Add UI controls to the appropriate section of `frontend/js/settings-page.js`
+3. Read the setting via the settings API or settings cache at runtime (Go: `store.GetSetting(key)` / `store.GetSettings()`; Python: settings dict from `_load_settings()`)
+4. Do **NOT** add it to `config.toml` unless the app cannot start without it
+
+**Rule of thumb:** If the setting cannot take effect until after the database is open, it belongs in the database.
 
 ### Log Query API
 

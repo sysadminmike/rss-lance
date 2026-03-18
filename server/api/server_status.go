@@ -10,8 +10,12 @@ import (
 
 // ServerStatusHandler handles GET /api/server-status
 type ServerStatusHandler struct {
-	startTime time.Time
-	cacheStats func() CacheStatsInfo
+	startTime       time.Time
+	buildTime       string
+	buildVersion    string
+	cacheStats      func() CacheStatsInfo
+	duckdbProcInfo  func() *DuckDBProcessInfo
+	logBufferStats  func() *LogBufferStatsInfo
 }
 
 // CacheStatsInfo holds write cache statistics exposed to the status endpoint.
@@ -22,8 +26,21 @@ type CacheStatsInfo struct {
 	LastFlushDurationMs int64 `json:"last_flush_duration_ms"`
 }
 
-func NewServerStatusHandler(startTime time.Time, cacheStats func() CacheStatsInfo) *ServerStatusHandler {
-	return &ServerStatusHandler{startTime: startTime, cacheStats: cacheStats}
+// DuckDBProcessInfo holds info about the external duckdb.exe process.
+type DuckDBProcessInfo struct {
+	PID           int   `json:"pid"`
+	UptimeSeconds int64 `json:"uptime_seconds"`
+}
+
+// LogBufferStatsInfo holds log buffer resilience statistics.
+type LogBufferStatsInfo struct {
+	MemoryEntries int `json:"memory_entries"`
+	DuckDBEntries int `json:"duckdb_entries"`
+	InfraEvents   int `json:"infra_events"`
+}
+
+func NewServerStatusHandler(startTime time.Time, buildTime, buildVersion string, cacheStats func() CacheStatsInfo, duckdbProcInfo func() *DuckDBProcessInfo, logBufferStats func() *LogBufferStatsInfo) *ServerStatusHandler {
+	return &ServerStatusHandler{startTime: startTime, buildTime: buildTime, buildVersion: buildVersion, cacheStats: cacheStats, duckdbProcInfo: duckdbProcInfo, logBufferStats: logBufferStats}
 }
 
 func (h *ServerStatusHandler) Handle(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +102,18 @@ func (h *ServerStatusHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		cache = h.cacheStats()
 	}
 
+	// DuckDB external process info (Windows only)
+	var duckdbProc *DuckDBProcessInfo
+	if h.duckdbProcInfo != nil {
+		duckdbProc = h.duckdbProcInfo()
+	}
+
+	// Log buffer resilience stats
+	var logBuffer *LogBufferStatsInfo
+	if h.logBufferStats != nil {
+		logBuffer = h.logBufferStats()
+	}
+
 	resp := map[string]any{
 		"server": map[string]any{
 			"uptime_seconds":     uptimeSecs,
@@ -97,6 +126,8 @@ func (h *ServerStatusHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			"goroutines":         goroutines,
 			"build_vcs_revision": vcsRevision,
 			"build_vcs_time":     vcsTime,
+			"build_time":         h.buildTime,
+			"build_version":      h.buildVersion,
 		},
 		"host": map[string]any{
 			"uptime_seconds": hostUptimeSecs,
@@ -124,6 +155,8 @@ func (h *ServerStatusHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			"recent_pauses_ns":     recentPauses,
 		},
 		"write_cache": cache,
+		"duckdb_process": duckdbProc,
+		"log_buffer": logBuffer,
 	}
 
 	jsonOK(w, resp)

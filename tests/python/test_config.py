@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "fetcher"))
 
 from config import Config, load
 
@@ -31,9 +31,6 @@ class TestConfigLoad(unittest.TestCase):
         self._write_config("")
         cfg = Config(self._config_path)
         self.assertEqual(cfg.storage_type, "local")
-        self.assertEqual(cfg.fetch_interval_minutes, 30)
-        self.assertEqual(cfg.max_concurrent, 5)
-        self.assertEqual(cfg.user_agent, "RSS-Lance/1.0")
         self.assertEqual(cfg.server_host, "127.0.0.1")
         self.assertEqual(cfg.server_port, 8080)
 
@@ -43,20 +40,12 @@ class TestConfigLoad(unittest.TestCase):
 type = "s3"
 path = "/opt/data"
 
-[fetcher]
-interval_minutes = 15
-max_concurrent = 10
-user_agent = "MyReader/2.0"
-
 [server]
 host = "0.0.0.0"
 port = 9090
 """)
         cfg = Config(self._config_path)
         self.assertEqual(cfg.storage_type, "s3")
-        self.assertEqual(cfg.fetch_interval_minutes, 15)
-        self.assertEqual(cfg.max_concurrent, 10)
-        self.assertEqual(cfg.user_agent, "MyReader/2.0")
         self.assertEqual(cfg.server_host, "0.0.0.0")
         self.assertEqual(cfg.server_port, 9090)
 

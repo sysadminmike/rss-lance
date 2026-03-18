@@ -57,11 +57,26 @@ type Store interface {
 	// Write cache stats
 	CacheStats() (pendingReads, pendingStars int)
 
+	// Log buffer stats (3-tier write path)
+	LogBufferStats() LogBufferStatus
+
+	// DuckDB external process info (Windows only; returns nil on CGo platforms)
+	DuckDBProcessInfo() *DuckDBProcessInfo
+
 	// Raw table viewer
 	QueryTable(table string, limit, offset int) (*TableQueryResult, error)
+
+	// Offline cache status (nil when offline mode is disabled)
+	OfflineStatus() *OfflineStatus
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+
+// DuckDBProcessInfo holds info about the external duckdb.exe process (Windows only).
+type DuckDBProcessInfo struct {
+	PID           int   `json:"pid"`
+	UptimeSeconds int64 `json:"uptime_seconds"`
+}
 
 type Feed struct {
 	FeedID            string     `json:"feed_id"`
@@ -129,11 +144,13 @@ type LogEntry struct {
 
 // LogQuery defines filters for querying logs.
 type LogQuery struct {
-	Service  string // "api", "fetcher", or "" for all
-	Level    string // "debug", "info", "warn", "error", or "" for all
-	Category string // specific category or "" for all
-	Limit    int
-	Offset   int
+	Service   string     // "api", "fetcher", or "" for all
+	Level     string     // "debug", "info", "warn", "error", or "" for all
+	Category  string     // specific category or "" for all
+	StartTime *time.Time // inclusive lower bound on timestamp
+	EndTime   *time.Time // inclusive upper bound on timestamp
+	Limit     int
+	Offset    int
 }
 
 // ColumnInfo describes a single column in a Lance table.
@@ -255,5 +272,13 @@ func loadLogBufferConfig(settings map[string]string) LogBufferConfig {
 	return LogBufferConfig{
 		FlushThreshold:    settingInt(settings, "log_buffer.flush_threshold", d.FlushThreshold),
 		FlushIntervalSecs: settingInt(settings, "log_buffer.flush_interval_secs", d.FlushIntervalSecs),
+		MemoryCap:         settingInt(settings, "log_buffer.memory_cap", d.MemoryCap),
 	}
+}
+
+// LogBufferStatus reports the current state of the 3-tier log write path.
+type LogBufferStatus struct {
+	MemoryEntries int `json:"memory_entries"` // entries buffered in memory
+	DuckDBEntries int `json:"duckdb_entries"` // entries pending in DuckDB cached_logs
+	InfraEvents   int `json:"infra_events"`   // infrastructure events in ring buffer
 }

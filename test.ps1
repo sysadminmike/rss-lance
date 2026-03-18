@@ -15,11 +15,12 @@
     .\test.ps1 backend    # Python + Go (no frontend)
     .\test.ps1 database   # Python DB integration tests only
     .\test.ps1 api        # Go API tests only
+    .\test.ps1 e2e        # End-to-end integration test (builds server with test version)
 #>
 
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("all", "python", "go", "frontend", "backend", "database", "api", "help")]
+    [ValidateSet("all", "python", "go", "frontend", "backend", "database", "api", "e2e", "help")]
     [string]$Suite = "all"
 )
 
@@ -78,9 +79,9 @@ function Write-TestResult($name, $status, $detail) {
 # ── Python Tests ───────────────────────────────────────────────────────────────
 
 function Run-PythonTests {
-    param([string[]]$TestPaths = @("fetcher/tests/"))
+    param([string[]]$TestPaths = @("tests/python/"))
 
-    $label = if ($TestPaths.Count -eq 1 -and $TestPaths[0] -ne "fetcher/tests/") {
+    $label = if ($TestPaths.Count -eq 1 -and $TestPaths[0] -ne "tests/python/") {
         "Python Tests ($($TestPaths[0]))"
     } else { "Python Fetcher Tests" }
 
@@ -126,7 +127,7 @@ function Run-PythonTests {
             $result   = $Matches[2]
 
             # Clean up long path for display
-            $testName = $testName -replace '^fetcher/tests/', '' -replace '\.py::', ' > '
+            $testName = $testName -replace '^tests/python/', '' -replace '\.py::', ' > '
 
             switch ($result) {
                 "PASSED"  { Write-TestResult $testName "PASS" }
@@ -328,6 +329,57 @@ function Run-FrontendTests {
     Pop-Location
 }
 
+# ── E2E Test ───────────────────────────────────────────────────────────────────
+
+function Run-E2ETest {
+    Write-Section "E2E Integration Test (build + version verification)"
+    $script:suitesRun += "E2E Integration"
+
+    $python = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+    if (-not (Test-Path $python)) {
+        Write-Host "  [SKIP] Python venv not found at .venv\" -ForegroundColor Yellow
+        Write-Host "         Run: .\build.ps1 setup" -ForegroundColor Yellow
+        return
+    }
+
+    # Generate a unique test version ID
+    $testVersion = "test-" + -join ((48..57) + (97..102) | Get-Random -Count 12 | ForEach-Object { [char]$_ })
+    Write-Host "  Test version: $testVersion" -ForegroundColor DarkGray
+
+    # Build server with test version
+    Write-Host "  Building server with BUILD_VERSION=$testVersion ..." -ForegroundColor DarkGray
+    $env:BUILD_VERSION = $testVersion
+    try {
+        & "$ProjectRoot\build.ps1" server
+        if ($LASTEXITCODE -ne 0) {
+            Write-TestResult "Build server with test version" "FAIL" "build.ps1 server failed"
+            return
+        }
+        Write-TestResult "Build server with test version" "PASS"
+    } finally {
+        Remove-Item Env:\BUILD_VERSION -ErrorAction SilentlyContinue
+    }
+
+    # Run e2e test with version verification
+    Write-Host "  Running e2e_test.py --build-version $testVersion ..." -ForegroundColor DarkGray
+    $rawOutput = & $python tests/e2e_test.py --build-version $testVersion 2>&1 | Out-String
+
+    # Parse e2e output: lines like "  [PASS] name" or "  [FAIL] name"
+    foreach ($line in ($rawOutput -split "`n")) {
+        $trimmed = $line.TrimEnd()
+        if ($trimmed -match '^\s*\[PASS\]\s+(.+)$') {
+            Write-TestResult $Matches[1] "PASS"
+        }
+        elseif ($trimmed -match '^\s*\[FAIL\]\s+(.+)$') {
+            $detail = ""
+            Write-TestResult $Matches[1] "FAIL" $detail
+        }
+        elseif ($trimmed -match 'WARNING:.*Server.*crash|WARNING:.*binary.*replaced') {
+            Write-Host "  $trimmed" -ForegroundColor Red
+        }
+    }
+}
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 switch ($Suite) {
@@ -339,8 +391,9 @@ switch ($Suite) {
     "go"       { Run-GoTests }
     "frontend" { Run-FrontendTests }
     "backend"  { Run-PythonTests; Run-GoTests }
-    "database" { Run-PythonTests -TestPaths @("fetcher/tests/test_db.py") }
+    "database" { Run-PythonTests -TestPaths @("tests/python/test_db.py") }
     "api"      { Run-GoTests -Packages @("api") }
+    "e2e"      { Run-E2ETest }
     "all" {
         Run-PythonTests
         Run-GoTests

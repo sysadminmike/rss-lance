@@ -9,6 +9,7 @@ import { hideStatusPage, isStatusVisible } from './status.js';
 import { hideSettingsPage, isSettingsPageVisible } from './settings-page.js';
 import { hideTableViewerPage, isTableViewerVisible } from './table-viewer.js';
 import { hideServerStatusPage, isServerStatusVisible } from './server-status-page.js';
+import { hideDuckHuntPage, isDuckHuntVisible } from './duck-hunt.js';
 
 let _logsVisible = false;
 let _autoRefreshTimer = null;
@@ -20,6 +21,7 @@ export async function showLogsPage() {
   if (isSettingsPageVisible()) hideSettingsPage();
   if (isTableViewerVisible()) hideTableViewerPage();
   if (isServerStatusVisible()) hideServerStatusPage();
+  if (isDuckHuntVisible()) hideDuckHuntPage();
 
   const app = document.getElementById('app');
   const listPane  = document.getElementById('article-list-pane');
@@ -68,6 +70,8 @@ export function isLogsVisible() { return _logsVisible; }
 // ---- State ----
 let _currentService = '';
 let _currentLevel = '';
+let _currentCategory = '';
+let _currentTimeRange = '';
 let _currentLimit = 100;
 let _currentOffset = 0;
 
@@ -95,6 +99,36 @@ function renderLogsPage(container) {
             <option value="warn">Warning</option>
             <option value="info">Info</option>
             <option value="debug">Debug</option>
+          </select>
+        </div>
+        <div class="logs-filter-group">
+          <label>Category</label>
+          <select id="log-filter-category">
+            <option value="">All Categories</option>
+            <option value="lifecycle">Lifecycle</option>
+            <option value="requests">Requests</option>
+            <option value="settings_changes">Settings Changes</option>
+            <option value="feed_actions">Feed Actions</option>
+            <option value="article_actions">Article Actions</option>
+            <option value="easter_eggs">\uD83E\uDD86</option>
+            <option value="errors">Errors</option>
+            <option value="fetch_cycle">Fetch Cycle</option>
+            <option value="feed_fetch">Feed Fetch</option>
+            <option value="article_processing">Article Processing</option>
+            <option value="compaction">Compaction</option>
+            <option value="tier_changes">Tier Changes</option>
+            <option value="sanitization">Sanitization</option>
+          </select>
+        </div>
+        <div class="logs-filter-group">
+          <label>Time Range</label>
+          <select id="log-filter-time">
+            <option value="">All Time</option>
+            <option value="15m">Last 15 min</option>
+            <option value="1h">Last hour</option>
+            <option value="6h">Last 6 hours</option>
+            <option value="24h">Last 24 hours</option>
+            <option value="7d">Last 7 days</option>
           </select>
         </div>
         <div class="logs-filter-group">
@@ -137,6 +171,8 @@ function renderLogsPage(container) {
   // Wire up filter events
   const serviceSelect = document.getElementById('log-filter-service');
   const levelSelect = document.getElementById('log-filter-level');
+  const categorySelect = document.getElementById('log-filter-category');
+  const timeSelect = document.getElementById('log-filter-time');
   const limitSelect = document.getElementById('log-filter-limit');
   const btnRefresh = document.getElementById('btn-refresh-logs');
   const autoRefreshCb = document.getElementById('log-auto-refresh');
@@ -148,6 +184,16 @@ function renderLogsPage(container) {
   });
   levelSelect.addEventListener('change', () => {
     _currentLevel = levelSelect.value;
+    _currentOffset = 0;
+    fetchAndRenderLogs();
+  });
+  categorySelect.addEventListener('change', () => {
+    _currentCategory = categorySelect.value;
+    _currentOffset = 0;
+    fetchAndRenderLogs();
+  });
+  timeSelect.addEventListener('change', () => {
+    _currentTimeRange = timeSelect.value;
     _currentOffset = 0;
     fetchAndRenderLogs();
   });
@@ -181,6 +227,19 @@ async function fetchAndRenderLogs() {
   let params = `?limit=${_currentLimit}&offset=${_currentOffset}`;
   if (_currentService) params += `&service=${encodeURIComponent(_currentService)}`;
   if (_currentLevel) params += `&level=${encodeURIComponent(_currentLevel)}`;
+  if (_currentCategory) params += `&category=${encodeURIComponent(_currentCategory)}`;
+  if (_currentTimeRange) {
+    const now = new Date();
+    let start;
+    switch (_currentTimeRange) {
+      case '15m': start = new Date(now.getTime() - 15 * 60 * 1000); break;
+      case '1h':  start = new Date(now.getTime() - 60 * 60 * 1000); break;
+      case '6h':  start = new Date(now.getTime() - 6 * 60 * 60 * 1000); break;
+      case '24h': start = new Date(now.getTime() - 24 * 60 * 60 * 1000); break;
+      case '7d':  start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); break;
+    }
+    if (start) params += `&start_time=${encodeURIComponent(start.toISOString())}`;
+  }
 
   try {
     const data = await apiFetch('/api/logs' + params);

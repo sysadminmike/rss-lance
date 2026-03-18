@@ -1,7 +1,7 @@
 /** @type {import('jest').Config} */
 module.exports = {
   testEnvironment: 'jsdom',
-  roots: ['./tests'],
+  roots: ['../tests/frontend'],
   testMatch: ['**/*.test.js'],
   // Transform ES modules for jest
   transform: {},

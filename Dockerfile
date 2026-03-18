@@ -17,7 +17,10 @@ COPY server/go.mod server/go.sum ./server/
 RUN cd server && go mod download
 
 COPY server/ ./server/
-RUN cd server && CGO_ENABLED=1 go build -o /rss-lance-server .
+ARG BUILD_VERSION=""
+RUN cd server && CGO_ENABLED=1 go build \
+    -ldflags "-X main.BuildTime=$(date -u '+%Y-%m-%dT%H:%M:%SZ') -X main.BuildVersion=${BUILD_VERSION}" \
+    -o /rss-lance-server .
 
 # ---- Stage 2: Install Python fetcher deps ----
 FROM python:3.12-slim-bookworm AS py-builder

@@ -6,29 +6,16 @@ Edit `config.toml` in the project root:
 [storage]
 type = "local"              # "local" or "s3"
 path = "./data"             # local path or S3 URI (e.g. "s3://my-bucket/rss-lance")
+# duckdb_path = ""          # local path for DuckDB (must be local, not NFS/SMB/USB)
 # s3_region = "us-east-1"   # only needed if not set in ~/.aws/config
 # s3_endpoint = ""           # custom endpoint for MinIO, R2, etc.
 # See docs/s3.md for full cloud storage setup guide.
-
-[fetcher]
-interval_minutes = 30       # default fetch interval
-max_concurrent = 5          # parallel feed fetches
-user_agent = "RSS-Lance/1.0"
 
 [server]
 host = "127.0.0.1"
 port = 8080
 frontend_dir = "./frontend"
 show_shutdown = false       # show a "Stop Server" button in the web UI
-table_page_size = 200       # default page size for /api/tables/{name} (max 5000)
-
-# Per-table compaction thresholds (number of data fragments).
-# The fetcher runs compact_files() when a table exceeds its threshold.
-[compaction]
-articles      = 20    # grows fastest
-feeds         = 50
-categories    = 50
-pending_feeds = 10    # small queue - keep tidy
 
 [migration.ttrss]
 # postgres_url = "postgresql://user:pass@host:5432/ttrss"
@@ -83,7 +70,7 @@ RSS_LANCE_DEBUG=all ./run.sh server  # Linux/macOS
 
 ## Custom CSS
 
-Add your own CSS rules to customise the look of RSS-Lance. Open **Other → Advanced Settings** in the sidebar to access the CSS editor. Changes are saved to the database and applied immediately.
+Add your own CSS rules to customise the look of RSS-Lance. Open **Other → Settings** in the sidebar to access the CSS editor. Changes are saved to the database and applied immediately.
 
 Example:
 
@@ -99,4 +86,4 @@ Example:
 
 The custom CSS is stored in the `settings` table under the key `custom_css` and served at `/css/custom.css`. It loads after the built-in styles so your rules take precedence.
 
-**Migration from file-based custom CSS:** If you previously used a `custom.css` file in your data directory, the server will still load it as a fallback. To migrate, paste your CSS into the Advanced Settings editor and save — the database value will take priority over the file.
+**Migration from file-based custom CSS:** If you previously used a `custom.css` file in your data directory, the server will still load it as a fallback. To migrate, paste your CSS into the Settings editor and save — the database value will take priority over the file.

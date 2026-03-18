@@ -7,7 +7,7 @@ import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "fetcher"))
 
 from main import _compute_new_tier, TIER_THRESHOLDS, TIER_INTERVALS
 

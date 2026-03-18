@@ -210,6 +210,14 @@ func TestGetDBStatusArticleMetrics(t *testing.T) {
 		t.Fatalf("Bootstrap failed: %v", err)
 	}
 
+	// Start persistent DuckDB process (Phase 2)
+	proc, err := newDuckDBProcess(duckdbBin, dbPath, tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to start persistent DuckDB process: %v", err)
+	}
+	defer proc.close()
+	s.duckProc = proc
+
 	// Set up a writer (needed for getTableMeta) and a no-op cache
 	w, err := newLanceWriter(tmpDir)
 	if err != nil {

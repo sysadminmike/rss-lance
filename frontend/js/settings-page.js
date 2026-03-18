@@ -9,6 +9,7 @@ import { hideStatusPage, isStatusVisible } from './status.js';
 import { hideLogsPage, isLogsVisible } from './logs-page.js';
 import { hideTableViewerPage, isTableViewerVisible } from './table-viewer.js';
 import { hideServerStatusPage, isServerStatusVisible } from './server-status-page.js';
+import { hideDuckHuntPage, isDuckHuntVisible } from './duck-hunt.js';
 
 let _settingsVisible = false;
 
@@ -19,6 +20,7 @@ export async function showSettingsPage() {
   if (isLogsVisible()) hideLogsPage();
   if (isTableViewerVisible()) hideTableViewerPage();
   if (isServerStatusVisible()) hideServerStatusPage();
+  if (isDuckHuntVisible()) hideDuckHuntPage();
 
   const app = document.getElementById('app');
   const listPane  = document.getElementById('article-list-pane');
@@ -103,6 +105,7 @@ function renderSettingsPage(container, settings) {
         { key: 'log.api.settings_changes',  label: 'Settings changes',      desc: 'When settings are modified' },
         { key: 'log.api.feed_actions',      label: 'Feed actions',          desc: 'Add feed, mark-all-read, etc.' },
         { key: 'log.api.article_actions',   label: 'Article actions',       desc: 'Read/star individual articles (verbose)' },
+        { key: 'log.api.easter_eggs',        label: 'Easter eggs',           desc: 'Duck hunt and other fun stuff' },
         { key: 'log.api.errors',            label: 'Errors',                desc: 'Error responses' },
       ]
     }
@@ -112,43 +115,99 @@ function renderSettingsPage(container, settings) {
   const retentionMode = settings['log.retention_mode'] ?? 'count';
   const maxAgeDays = settings['log.max_age_days'] ?? 30;
 
-  // Advanced settings grouped by component
+  // Advanced settings grouped by component, with collapsible subgroups
   const advancedGroups = [
     {
       title: 'Fetcher',
-      desc: 'Feed fetching, tier management, and fetcher-side compaction.',
-      fields: [
-        { key: 'fetcher.interval_minutes',     label: 'Fetch interval (mins)',      desc: 'Minutes between fetch cycles (daemon mode)', def: 30 },
-        { key: 'fetcher.max_concurrent',        label: 'Max concurrent fetches',     desc: 'Number of feeds fetched in parallel', def: 5 },
-        { key: 'fetcher.user_agent',            label: 'User-Agent',                 desc: 'HTTP User-Agent header sent when fetching feeds', def: 'RSS-Lance/1.0', type: 'text' },
-        { key: 'fetcher.fetch_timeout_secs',    label: 'Fetch timeout (secs)',       desc: 'HTTP request timeout in seconds for fetching feeds', def: 20 },
-        { key: 'fetcher.poll_interval_secs',    label: 'Scheduler poll interval (secs)', desc: 'Seconds between scheduler poll checks in daemon mode', def: 30 },
-        { key: 'tier.threshold.active',         label: 'Tier threshold: active (days)',   desc: 'Days without articles before downgrading from active → slowing', def: 3 },
-        { key: 'tier.threshold.slowing',        label: 'Tier threshold: slowing (days)',  desc: 'Days without articles before downgrading from slowing → quiet', def: 14 },
-        { key: 'tier.threshold.quiet',          label: 'Tier threshold: quiet (days)',    desc: 'Days without articles before downgrading from quiet → dormant', def: 60 },
-        { key: 'tier.threshold.dormant',        label: 'Tier threshold: dormant (days)',  desc: 'Days without articles before downgrading from dormant → dead', def: 180 },
-        { key: 'tier.interval.active',          label: 'Tier interval: active (mins)',    desc: 'Minutes between fetches for active feeds', def: 30 },
-        { key: 'tier.interval.slowing',         label: 'Tier interval: slowing (mins)',   desc: 'Minutes between fetches for slowing feeds', def: 1440 },
-        { key: 'tier.interval.quiet',           label: 'Tier interval: quiet (mins)',     desc: 'Minutes between fetches for quiet feeds', def: 10080 },
-        { key: 'tier.interval.dormant',         label: 'Tier interval: dormant (mins)',   desc: 'Minutes between fetches for dormant feeds', def: 43200 },
-        { key: 'compaction.articles',           label: 'Compaction: articles',       desc: 'Compact after this many fragments (articles table grows fastest)', def: 20 },
-        { key: 'compaction.feeds',              label: 'Compaction: feeds',          desc: 'Compact after this many fragments', def: 50 },
-        { key: 'compaction.categories',         label: 'Compaction: categories',     desc: 'Compact after this many fragments', def: 50 },
-        { key: 'compaction.pending_feeds',      label: 'Compaction: pending feeds',  desc: 'Compact after this many fragments', def: 10 },
-        { key: 'compaction.log_fetcher',        label: 'Compaction: fetcher logs',   desc: 'Compact fetcher log table after this many fragments', def: 20 },
+      desc: 'Feed fetching, tier management, and fetcher-side compaction. Changes take effect on next restart.',
+      subgroups: [
+        {
+          id: 'fetcher-general',
+          title: 'Fetching',
+          desc: 'Core fetch cycle settings.',
+          fields: [
+            { key: 'fetcher.interval_minutes',     label: 'Fetch interval (mins)',           desc: 'Minutes between fetch cycles (daemon mode)', def: 30 },
+            { key: 'fetcher.max_concurrent',        label: 'Max concurrent fetches',          desc: 'Number of feeds fetched in parallel', def: 5 },
+            { key: 'fetcher.user_agent',            label: 'User-Agent',                      desc: 'HTTP User-Agent header sent when fetching feeds', def: 'RSS-Lance/1.0', type: 'text' },
+            { key: 'fetcher.fetch_timeout_secs',    label: 'Fetch timeout (secs)',            desc: 'HTTP request timeout in seconds for fetching feeds', def: 20 },
+            { key: 'fetcher.poll_interval_secs',    label: 'Scheduler poll interval (secs)',  desc: 'Seconds between scheduler poll checks in daemon mode', def: 30 },
+          ]
+        },
+        {
+          id: 'fetcher-tier-thresholds',
+          title: 'Tier Thresholds',
+          desc: 'Days of inactivity before a feed is downgraded to a slower tier.',
+          fields: [
+            { key: 'tier.threshold.active',  label: 'Active (days)',   desc: 'Days without articles before downgrading from active to slowing', def: 3 },
+            { key: 'tier.threshold.slowing', label: 'Slowing (days)',  desc: 'Days without articles before downgrading from slowing to quiet', def: 14 },
+            { key: 'tier.threshold.quiet',   label: 'Quiet (days)',    desc: 'Days without articles before downgrading from quiet to dormant', def: 60 },
+            { key: 'tier.threshold.dormant', label: 'Dormant (days)',  desc: 'Days without articles before downgrading from dormant to dead', def: 180 },
+          ]
+        },
+        {
+          id: 'fetcher-tier-intervals',
+          title: 'Tier Intervals',
+          desc: 'How often feeds in each tier are fetched.',
+          fields: [
+            { key: 'tier.interval.active',   label: 'Active (mins)',   desc: 'Minutes between fetches for active feeds', def: 30 },
+            { key: 'tier.interval.slowing',  label: 'Slowing (mins)',  desc: 'Minutes between fetches for slowing feeds', def: 1440 },
+            { key: 'tier.interval.quiet',    label: 'Quiet (mins)',    desc: 'Minutes between fetches for quiet feeds', def: 10080 },
+            { key: 'tier.interval.dormant',  label: 'Dormant (mins)',  desc: 'Minutes between fetches for dormant feeds', def: 43200 },
+          ]
+        },
+        {
+          id: 'fetcher-compaction',
+          title: 'Compaction',
+          desc: 'Compact tables after this many data fragments accumulate.',
+          fields: [
+            { key: 'compaction.articles',       label: 'Articles',       desc: 'Compact after this many fragments (articles table grows fastest)', def: 20 },
+            { key: 'compaction.feeds',          label: 'Feeds',          desc: 'Compact after this many fragments', def: 50 },
+            { key: 'compaction.categories',     label: 'Categories',     desc: 'Compact after this many fragments', def: 50 },
+            { key: 'compaction.pending_feeds',  label: 'Pending feeds',  desc: 'Compact after this many fragments', def: 10 },
+            { key: 'compaction.log_fetcher',    label: 'Fetcher logs',   desc: 'Compact fetcher log table after this many fragments', def: 20 },
+          ]
+        },
       ]
     },
     {
       title: 'Server',
-      desc: 'Go API server write-cache, log buffering, and server-side compaction.',
-      fields: [
-        { key: 'server.table_page_size',        label: 'Table viewer page size',     desc: 'Rows per page in the DB Table Viewer (max 5000)', def: 200 },
-        { key: 'stats.retention_minutes',       label: 'Stats retention (minutes)',  desc: 'How many minutes of server metrics history to keep in memory (charts on Server Status page)', def: 60 },
-        { key: 'cache.flush_threshold',         label: 'Cache: flush threshold',     desc: 'Flush article read/star cache after N changes', def: 20 },
-        { key: 'cache.flush_interval_secs',     label: 'Cache: flush interval (secs)', desc: 'Flush cache after N seconds (whichever comes first)', def: 120 },
-        { key: 'log_buffer.flush_threshold',    label: 'Log buffer: flush threshold', desc: 'Flush buffered log entries after N entries', def: 20 },
-        { key: 'log_buffer.flush_interval_secs',label: 'Log buffer: flush interval (secs)', desc: 'Flush buffered log entries after N seconds', def: 30 },
-        { key: 'compaction.log_api',            label: 'Compaction: API logs',       desc: 'Compact API log table after this many fragments', def: 20 },
+      desc: 'Go API server write-cache, log buffering, and server-side compaction. Changes take effect on next restart.',
+      subgroups: [
+        {
+          id: 'server-general',
+          title: 'General',
+          desc: 'Table viewer and metrics retention.',
+          fields: [
+            { key: 'server.table_page_size',  label: 'Table viewer page size',    desc: 'Rows per page in the DB Table Viewer (max 5000)', def: 200 },
+            { key: 'stats.retention_minutes', label: 'Stats retention (minutes)', desc: 'How many minutes of server metrics history to keep in memory (charts on Server Status page)', def: 60 },
+          ]
+        },
+        {
+          id: 'server-cache',
+          title: 'Write Cache',
+          desc: 'Batches article read/star updates before flushing to Lance.',
+          fields: [
+            { key: 'cache.flush_threshold',     label: 'Flush threshold',     desc: 'Flush article read/star cache after N changes', def: 20 },
+            { key: 'cache.flush_interval_secs', label: 'Flush interval (secs)', desc: 'Flush cache after N seconds (whichever comes first)', def: 120 },
+          ]
+        },
+        {
+          id: 'server-log-buffer',
+          title: 'Log Buffer',
+          desc: 'Batches API log entries before flushing to Lance.',
+          fields: [
+            { key: 'log_buffer.flush_threshold',     label: 'Flush threshold',     desc: 'Flush buffered log entries after N entries', def: 20 },
+            { key: 'log_buffer.flush_interval_secs', label: 'Flush interval (secs)', desc: 'Flush buffered log entries after N seconds', def: 30 },
+          ]
+        },
+        {
+          id: 'server-compaction',
+          title: 'Compaction',
+          desc: 'Compact server-side log tables after this many fragments.',
+          fields: [
+            { key: 'compaction.log_api', label: 'API logs', desc: 'Compact API log table after this many fragments', def: 20 },
+          ]
+        },
       ]
     }
   ];
@@ -194,36 +253,48 @@ function renderSettingsPage(container, settings) {
         </div>
       </div>
 
-      ${logGroups.map(group => `
-      <div class="settings-page-section log-section">
-        <div class="log-section-header">
-          <div>
+      ${logGroups.map(group => {
+        const allOn = group.options.every(opt => settings[opt.key] !== false);
+        const allOff = group.options.every(opt => settings[opt.key] === false);
+        const mode = allOn ? 'on' : allOff ? 'off' : 'custom';
+        const stateLabel = mode === 'on' ? 'All On' : mode === 'off' ? 'All Off' : 'Custom';
+        return `
+      <div class="settings-page-section log-section" data-log-group="${group.id}" data-mode="${mode}">
+        <div class="log-group-header" data-group="${group.id}">
+          <span class="log-group-arrow">\u25B6</span>
+          <div class="log-group-title-area">
             <h2>${group.title}</h2>
             <p class="settings-page-hint">${group.desc}</p>
           </div>
-          <label class="toggle-switch">
-            <input type="checkbox" data-log-key="${group.master}"
-              ${settings[group.master] !== false ? 'checked' : ''}>
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-        <div class="log-options" data-master="${group.master}">
-          ${group.options.map(opt => `
-          <div class="log-option-row">
-            <div class="log-option-info">
-              <span class="log-option-label">${opt.label}</span>
-              <span class="log-option-desc">${opt.desc}</span>
-            </div>
-            <label class="toggle-switch toggle-sm">
-              <input type="checkbox" data-log-key="${opt.key}"
-                ${settings[opt.key] !== false ? 'checked' : ''}>
-              <span class="toggle-slider"></span>
-            </label>
+          <div class="log-group-controls">
+            <span class="log-group-state-label">${stateLabel}</span>
           </div>
+        </div>
+        <div class="log-options" data-group-body="${group.id}" style="display:none">
+          <div class="log-mode-control" data-group="${group.id}">
+            <button class="log-mode-btn${mode === 'off' ? ' active' : ''}" data-mode="off">All Off</button>
+            <button class="log-mode-btn${mode === 'custom' ? ' active' : ''}" data-mode="custom">Custom</button>
+            <button class="log-mode-btn${mode === 'on' ? ' active' : ''}" data-mode="on">All On</button>
+          </div>
+          <div class="log-options-list${mode !== 'custom' ? ' options-locked' : ''}">
+          ${group.options.map(opt => `
+            <div class="log-option-row">
+              <div class="log-option-info">
+                <span class="log-option-label">${opt.label}</span>
+                <span class="log-option-desc">${opt.desc}</span>
+              </div>
+              <label class="toggle-switch toggle-sm">
+                <input type="checkbox" data-log-key="${opt.key}"
+                  ${settings[opt.key] !== false ? 'checked' : ''}>
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
           `).join('')}
+          </div>
         </div>
       </div>
-      `).join('')}
+      `;
+      }).join('')}
 
       <div class="settings-page-section">
         <h2>Log Retention</h2>
@@ -254,18 +325,69 @@ function renderSettingsPage(container, settings) {
         <span id="log-save-status" class="settings-page-status"></span>
       </div>
 
+      <div class="settings-page-section">
+        <h2>Offline Mode</h2>
+        <p class="settings-page-hint">
+          Cache data locally so the app keeps working when Lance storage is unreachable.
+        </p>
+        <div class="log-option-row">
+          <div class="log-option-info">
+            <span class="log-option-label">Enable offline mode</span>
+            <span class="log-option-desc">Automatically fall back to a local cache when Lance is down</span>
+          </div>
+          <label class="toggle-switch toggle-sm">
+            <input type="checkbox" id="sp-offline-enabled"
+              ${settings['offline_enabled'] === true || settings['offline_enabled'] === 'true' ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="log-option-row">
+          <div class="log-option-info">
+            <span class="log-option-label">Snapshot interval (minutes)</span>
+            <span class="log-option-desc">How often to copy recent data into the local cache</span>
+          </div>
+          <input type="number" id="sp-offline-interval" class="settings-page-input settings-page-input-sm"
+            value="${settings['offline_snapshot_interval_mins'] ?? 10}" min="1" max="1440" step="1">
+        </div>
+        <div class="log-option-row">
+          <div class="log-option-info">
+            <span class="log-option-label">Article cache window (days)</span>
+            <span class="log-option-desc">Cache articles updated within this many days</span>
+          </div>
+          <input type="number" id="sp-offline-days" class="settings-page-input settings-page-input-sm"
+            value="${settings['offline_article_days'] ?? 7}" min="1" max="365" step="1">
+        </div>
+        <div class="settings-page-actions" style="margin-top: 8px">
+          <button id="btn-save-offline" class="settings-page-btn primary">Save Offline Settings</button>
+          <span id="offline-save-status" class="settings-page-status"></span>
+        </div>
+      </div>
+
       ${advancedGroups.map(group => `
       <div class="settings-page-section">
         <h2>${group.title}</h2>
-        <p class="settings-page-hint">${group.desc} Changes take effect on next restart.</p>
-        ${group.fields.map(f => `
-        <div class="log-option-row">
-          <div class="log-option-info">
-            <span class="log-option-label">${f.label}</span>
-            <span class="log-option-desc">${f.desc}</span>
+        <p class="settings-page-hint">${group.desc}</p>
+        ${group.subgroups.map(sg => `
+        <div class="adv-subgroup" data-adv-group="${sg.id}">
+          <div class="log-group-header" data-adv-header="${sg.id}">
+            <span class="log-group-arrow">\u25B6</span>
+            <div class="log-group-title-area">
+              <h2>${sg.title}</h2>
+              <p class="settings-page-hint">${sg.desc}</p>
+            </div>
           </div>
-          <input type="${f.type || 'number'}" data-adv-key="${f.key}" class="settings-page-input settings-page-input-sm"
-            value="${settings[f.key] ?? f.def}"${f.type === 'text' ? '' : ' min="1" max="100000" step="1"'}>
+          <div class="adv-subgroup-body" data-adv-body="${sg.id}" style="display:none">
+          ${sg.fields.map(f => `
+            <div class="log-option-row">
+              <div class="log-option-info">
+                <span class="log-option-label">${f.label}</span>
+                <span class="log-option-desc">${f.desc}</span>
+              </div>
+              <input type="${f.type || 'number'}" data-adv-key="${f.key}" class="settings-page-input settings-page-input-sm"
+                value="${settings[f.key] ?? f.def}"${f.type === 'text' ? '' : ' min="1" max="100000" step="1"'}>
+            </div>
+          `).join('')}
+          </div>
         </div>
         `).join('')}
       </div>
@@ -335,20 +457,89 @@ function renderSettingsPage(container, settings) {
     });
   }
 
-  // ---- Master toggle disables child options ----
-  container.querySelectorAll('.log-section-header input[data-log-key]').forEach(masterInput => {
-    const masterKey = masterInput.dataset.logKey;
-    const optionsDiv = container.querySelector(`.log-options[data-master="${masterKey}"]`);
-    function updateDisabled() {
-      if (optionsDiv) {
-        optionsDiv.classList.toggle('disabled', !masterInput.checked);
-        optionsDiv.querySelectorAll('input').forEach(inp => {
-          inp.disabled = !masterInput.checked;
-        });
-      }
+  // ---- Collapsible log groups ----
+  const _collapsedLogGroups = {};
+  container.querySelectorAll('.log-group-header').forEach(header => {
+    const groupId = header.dataset.group;
+    const body = container.querySelector(`[data-group-body="${groupId}"]`);
+    if (!body) return;
+
+    header.addEventListener('click', (e) => {
+      if (e.target.closest('.toggle-switch')) return;
+      _collapsedLogGroups[groupId] = !_collapsedLogGroups[groupId];
+      header.classList.toggle('expanded', !_collapsedLogGroups[groupId]);
+      body.style.display = _collapsedLogGroups[groupId] ? 'none' : '';
+    });
+
+    // Start collapsed
+    _collapsedLogGroups[groupId] = true;
+  });
+
+  // ---- Collapsible advanced subgroups ----
+  const _collapsedAdvGroups = {};
+  container.querySelectorAll('[data-adv-header]').forEach(header => {
+    const sgId = header.dataset.advHeader;
+    const body = container.querySelector(`[data-adv-body="${sgId}"]`);
+    if (!body) return;
+
+    header.addEventListener('click', () => {
+      _collapsedAdvGroups[sgId] = !_collapsedAdvGroups[sgId];
+      header.classList.toggle('expanded', !_collapsedAdvGroups[sgId]);
+      body.style.display = _collapsedAdvGroups[sgId] ? 'none' : '';
+    });
+
+    // Start collapsed
+    _collapsedAdvGroups[sgId] = true;
+  });
+
+  // ---- Helper: sync mode state across a log group ----
+  function _syncGroupMode(section, newMode) {
+    section.dataset.mode = newMode;
+    const optInputs = section.querySelectorAll('.log-options-list input[data-log-key]');
+    const optList = section.querySelector('.log-options-list');
+    const stateLabel = section.closest('.log-section')
+      ? section.querySelector('.log-group-state-label') || section.closest('.log-section').querySelector('.log-group-state-label')
+      : null;
+    // Update mode buttons
+    section.querySelectorAll('.log-mode-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.mode === newMode);
+    });
+    if (newMode === 'off') {
+      optInputs.forEach(inp => { inp.checked = false; });
+      if (optList) optList.classList.add('options-locked');
+      if (stateLabel) stateLabel.textContent = 'All Off';
+    } else if (newMode === 'on') {
+      optInputs.forEach(inp => { inp.checked = true; });
+      if (optList) optList.classList.add('options-locked');
+      if (stateLabel) stateLabel.textContent = 'All On';
+    } else {
+      if (optList) optList.classList.remove('options-locked');
+      if (stateLabel) stateLabel.textContent = 'Custom';
     }
-    updateDisabled();
-    masterInput.addEventListener('change', updateDisabled);
+  }
+
+  // ---- Mode control buttons (All Off / Custom / All On) ----
+  container.querySelectorAll('.log-mode-control').forEach(ctrl => {
+    ctrl.addEventListener('click', (e) => {
+      const btn = e.target.closest('.log-mode-btn');
+      if (!btn) return;
+      const section = ctrl.closest('[data-log-group]');
+      if (!section) return;
+      _syncGroupMode(section, btn.dataset.mode);
+    });
+  });
+
+  // ---- Sync mode label when individual toggles change ----
+  container.querySelectorAll('.log-options-list input[data-log-key]').forEach(inp => {
+    inp.addEventListener('change', () => {
+      const section = inp.closest('[data-log-group]');
+      if (!section) return;
+      const optInputs = section.querySelectorAll('.log-options-list input[data-log-key]');
+      const allOn = Array.from(optInputs).every(i => i.checked);
+      const allOff = Array.from(optInputs).every(i => !i.checked);
+      const mode = allOn ? 'on' : allOff ? 'off' : 'custom';
+      _syncGroupMode(section, mode);
+    });
   });
 
   // ---- Retention mode toggle ----
@@ -440,6 +631,40 @@ function renderSettingsPage(container, settings) {
       btnSaveAdv.disabled = false;
     }
   });
+
+  // ---- Save offline settings ----
+  const btnSaveOffline = document.getElementById('btn-save-offline');
+  const offlineStatus = document.getElementById('offline-save-status');
+
+  if (btnSaveOffline) {
+    btnSaveOffline.addEventListener('click', async () => {
+      btnSaveOffline.disabled = true;
+      offlineStatus.textContent = 'Saving...';
+      offlineStatus.className = 'settings-page-status';
+
+      const enabled = document.getElementById('sp-offline-enabled').checked;
+      const interval = parseInt(document.getElementById('sp-offline-interval').value, 10) || 10;
+      const days = parseInt(document.getElementById('sp-offline-days').value, 10) || 7;
+
+      try {
+        await apiFetch('/api/settings', {
+          method: 'PUT',
+          body: JSON.stringify({
+            offline_enabled: enabled ? 'true' : 'false',
+            offline_snapshot_interval_mins: interval,
+            offline_article_days: days,
+          }),
+        });
+        offlineStatus.textContent = 'Saved! Restart server to apply.';
+        offlineStatus.className = 'settings-page-status success';
+      } catch (e) {
+        offlineStatus.textContent = `Error: ${e.message}`;
+        offlineStatus.className = 'settings-page-status error';
+      } finally {
+        btnSaveOffline.disabled = false;
+      }
+    });
+  }
 
   btnSave.addEventListener('click', async () => {
     btnSave.disabled = true;

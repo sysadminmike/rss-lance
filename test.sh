@@ -9,6 +9,7 @@
 #   ./test.sh backend    # Python + Go (no frontend)
 #   ./test.sh database   # Python DB integration tests only
 #   ./test.sh api        # Go API tests only
+#   ./test.sh e2e        # E2E integration test (builds server with test version)
 
 set -euo pipefail
 
@@ -70,9 +71,9 @@ skip() {
 # ── Python Tests ───────────────────────────────────────────────────────────────
 
 run_python_tests() {
-    local test_paths=("${@:-fetcher/tests/}")
+    local test_paths=("${@:-tests/python/}")
     local label="Python Fetcher Tests"
-    if [ "${#test_paths[@]}" -eq 1 ] && [ "${test_paths[0]}" != "fetcher/tests/" ]; then
+    if [ "${#test_paths[@]}" -eq 1 ] && [ "${test_paths[0]}" != "tests/python/" ]; then
         label="Python Tests (${test_paths[0]})"
     fi
 
@@ -116,7 +117,7 @@ run_python_tests() {
             local result="${BASH_REMATCH[2]}"
 
             # Clean up path for display
-            test_name=$(echo "$test_name" | sed 's|^fetcher/tests/||; s|\.py::|  >  |')
+            test_name=$(echo "$test_name" | sed 's|^tests/python/||; s|\.py::|  >  |')
 
             case "$result" in
                 PASSED)  pass "$test_name" ;;
@@ -258,22 +259,68 @@ run_frontend_tests() {
     done <<< "$raw_output"
 }
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+# -- E2E Test ------------------------------------------------------------------
+
+run_e2e_test() {
+    section "E2E Integration Test (build + version verification)"
+    SUITES_RUN+=("E2E Integration")
+
+    local python="$PROJECT_ROOT/.venv/bin/python"
+    if [ ! -f "$python" ]; then
+        printf "${YELLOW}  [SKIP] Python venv not found at .venv/${NC}\n"
+        printf "${YELLOW}         Run: ./build.sh setup${NC}\n"
+        return
+    fi
+
+    # Generate a unique test version ID
+    local test_version="test-$(head -c 6 /dev/urandom | xxd -p)"
+    printf "${GRAY}  Test version: %s${NC}\n" "$test_version"
+
+    # Build server with test version
+    printf "${GRAY}  Building server with BUILD_VERSION=%s ...${NC}\n" "$test_version"
+    BUILD_VERSION="$test_version" "$PROJECT_ROOT/build.sh" server
+    if [ $? -ne 0 ]; then
+        fail "Build server with test version"
+        return
+    fi
+    pass "Build server with test version"
+
+    # Run e2e test with version verification
+    printf "${GRAY}  Running e2e_test.py --build-version %s ...${NC}\n" "$test_version"
+    local raw_output
+    raw_output=$("$python" tests/e2e_test.py --build-version "$test_version" 2>&1) || true
+
+    # Parse e2e output
+    while IFS= read -r line; do
+        local trimmed
+        trimmed=$(echo "$line" | sed 's/[[:space:]]*$//')
+        if [[ "$trimmed" =~ ^[[:space:]]*\[PASS\][[:space:]]+(.+)$ ]]; then
+            pass "${BASH_REMATCH[1]}"
+        elif [[ "$trimmed" =~ ^[[:space:]]*\[FAIL\][[:space:]]+(.+)$ ]]; then
+            fail "${BASH_REMATCH[1]}"
+        elif [[ "$trimmed" =~ WARNING:.*Server.*crash|WARNING:.*binary.*replaced ]]; then
+            printf "${RED}  %s${NC}\n" "$trimmed"
+        fi
+    done <<< "$raw_output"
+}
+
+# -- Main ----------------------------------------------------------------------
 
 case "$SUITE" in
     python)   run_python_tests ;;
     go)       run_go_tests ;;
     frontend) run_frontend_tests ;;
     backend)  run_python_tests; run_go_tests ;;
-    database) run_python_tests "fetcher/tests/test_db.py" ;;
+    database) run_python_tests "tests/python/test_db.py" ;;
     api)      run_go_tests "api" ;;
+    e2e)      run_e2e_test ;;
     all)
         run_python_tests
         run_go_tests
         run_frontend_tests
         ;;
     *)
-        echo "Usage: $0 [all|python|go|frontend|backend|database|api]"
+        echo "Usage: $0 [all|python|go|frontend|backend|database|api|e2e]"
         exit 1
         ;;
 esac

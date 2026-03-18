@@ -96,19 +96,6 @@ class Config:
     def s3_endpoint(self) -> str | None:
         return self._data.get("storage", {}).get("s3_endpoint", None)
 
-    # ── fetcher ────────────────────────────────────────────────────────────
-    @property
-    def fetch_interval_minutes(self) -> int:
-        return int(self._data.get("fetcher", {}).get("interval_minutes", 30))
-
-    @property
-    def max_concurrent(self) -> int:
-        return int(self._data.get("fetcher", {}).get("max_concurrent", 5))
-
-    @property
-    def user_agent(self) -> str:
-        return self._data.get("fetcher", {}).get("user_agent", "RSS-Lance/1.0")
-
     # ── server ─────────────────────────────────────────────────────────────
     @property
     def server_host(self) -> str:

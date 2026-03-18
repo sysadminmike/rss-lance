@@ -196,7 +196,13 @@ cmd_server() {
         export CGO_ENABLED=0
     fi
 
-    go build -o "$BUILD_DIR/rss-lance-server" .
+    local build_time
+    build_time=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    local ldflags="-X main.BuildTime=${build_time}"
+    if [ -n "${BUILD_VERSION:-}" ]; then
+        ldflags="${ldflags} -X main.BuildVersion=${BUILD_VERSION}"
+    fi
+    go build -ldflags "$ldflags" -o "$BUILD_DIR/rss-lance-server" .
     popd > /dev/null
     ok "Built: build/rss-lance-server"
 }
@@ -232,7 +238,13 @@ cmd_server_all() {
         CGO_CFLAGS="-I$SERVER_DIR/include" \
         CGO_LDFLAGS="$lib_dir/liblancedb_go.a -lm -ldl -lpthread" \
         GOOS="$native_os" GOARCH="$native_arch" \
-        go build -o "$BUILD_DIR/$native_name" .
+        local build_time
+        build_time=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+        local ldflags="-X main.BuildTime=${build_time}"
+        if [ -n "${BUILD_VERSION:-}" ]; then
+            ldflags="${ldflags} -X main.BuildVersion=${BUILD_VERSION}"
+        fi
+        go build -ldflags "$ldflags" -o "$BUILD_DIR/$native_name" .
     else
         echo "  WARNING: native lib not found at $lib_dir, skipping native CGo build" >&2
     fi

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	rtdebug "runtime/debug"
 	"strings"
 	"time"
 
@@ -19,11 +20,18 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Config mirrors config.toml
+// Build info variables — injected at compile time via -ldflags.
+var (
+	BuildTime    string // e.g. "2026-03-18T14:30:00Z"
+	BuildVersion string // e.g. "v1.0.0" or "test-abc123"
+)
+
+// Config 
 type Config struct {
 	Storage struct {
-		Type string `toml:"type"`
-		Path string `toml:"path"`
+		Type       string `toml:"type"`
+		Path       string `toml:"path"`
+		DuckDBPath string `toml:"duckdb_path"`
 	} `toml:"storage"`
 	Server struct {
 		Host          string `toml:"host"`
@@ -94,8 +102,15 @@ func main() {
 		frontendDir = filepath.Join(dir, frontendDir)
 	}
 
+	// Resolve duckdb_path if set (must be local storage for reliable locking)
+	duckdbPath := cfg.Storage.DuckDBPath
+	if duckdbPath != "" && !filepath.IsAbs(duckdbPath) {
+		dir := filepath.Dir(*configPath)
+		duckdbPath = filepath.Join(dir, duckdbPath)
+	}
+
 	// Open DB
-	store, err := db.Open(dataPath)
+	store, err := db.Open(dataPath, duckdbPath)
 	if err != nil {
 		log.Fatalf("db open: %v", err)
 	}
@@ -115,11 +130,28 @@ func main() {
 	statusHandler := api.NewStatusHandler(store)
 	logsHandler := api.NewLogsHandler(store)
 	tablesHandler := api.NewTablesHandler(store)
-	serverStatusHandler := api.NewServerStatusHandler(serverStartTime, func() api.CacheStatsInfo {
+	offlineStatusHandler := api.NewOfflineStatusHandler(store)
+	serverStatusHandler := api.NewServerStatusHandler(serverStartTime, BuildTime, BuildVersion, func() api.CacheStatsInfo {
 		reads, stars := store.CacheStats()
 		return api.CacheStatsInfo{
 			PendingReads: reads,
 			PendingStars: stars,
+		}
+	}, func() *api.DuckDBProcessInfo {
+		info := store.DuckDBProcessInfo()
+		if info == nil {
+			return nil
+		}
+		return &api.DuckDBProcessInfo{
+			PID:           info.PID,
+			UptimeSeconds: info.UptimeSeconds,
+		}
+	}, func() *api.LogBufferStatsInfo {
+		st := store.LogBufferStats()
+		return &api.LogBufferStatsInfo{
+			MemoryEntries: st.MemoryEntries,
+			DuckDBEntries: st.DuckDBEntries,
+			InfraEvents:   st.InfraEvents,
 		}
 	})
 
@@ -194,6 +226,53 @@ func main() {
 	mux.HandleFunc("/api/server-status/history", statsCollector.Handle)
 	mux.HandleFunc("/api/logs", logsHandler.Handle)
 	mux.HandleFunc("/api/tables/", tablesHandler.Handle)
+	mux.HandleFunc("/api/offline-status", offlineStatusHandler.Handle)
+
+	// POST /api/duck-hunt -- easter egg: log duck hunt results
+	mux.HandleFunc("/api/duck-hunt", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			Hit bool `json:"hit"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		if body.Hit {
+			hitMsgs := []string{
+				"BOOM! The DuckDB duck has been obliterated! SELECT * FROM ducks WHERE alive = true returns 0 rows.",
+				"Critical hit! DuckDB took 9999 damage. It's super effective!",
+				"The duck has been DROP TABLE'd! No ROLLBACK can save it now.",
+				"Duck terminated. Process exited with code QUACK. RIP in peace, little database bird.",
+				"Achievement unlocked: Duck Destroyer! Your data is now powered by pure chaos.",
+				"The DuckDB duck has been sent to /dev/null. It will be missed by approximately 0 people.",
+				"FATALITY! DuckDB has been defragmented... permanently.",
+			}
+			msg := hitMsgs[time.Now().UnixNano()%int64(len(hitMsgs))]
+			serverLogger.LogJSON("info", "easter_eggs", msg,
+				map[string]any{"game": "duck-hunt", "result": "hit", "quack_factor": 9001})
+		} else {
+			missMsgs := []string{
+				"MISS! The duck escapes! It quacks mockingly as it flies into the sunset. Better luck next time!",
+				"Swing and a miss! The DuckDB duck lives to OLAP another day.",
+				"You missed! The duck does a victory lap. Your aim is worse than a full table scan.",
+				"The duck dodged! It whispers 'my indexes are faster than your reflexes' as it flies away.",
+				"MISS! The duck survives. It will remember this. Expect slower queries as revenge.",
+				"Not even close! The duck quacks 'Have you tried EXPLAIN ANALYZE on your aim?'",
+				"You missed! DuckDB remains undefeated. Your shot went straight to the WAL... of shame.",
+			}
+			msg := missMsgs[time.Now().UnixNano()%int64(len(missMsgs))]
+			serverLogger.LogJSON("info", "easter_eggs", msg,
+				map[string]any{"game": "duck-hunt", "result": "miss", "quack_factor": 0})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})
 
 	// GET /api/config — expose selected config values to the frontend
 	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
@@ -231,8 +310,19 @@ func main() {
 
 	mux.Handle("/", fs)
 
+	// Extract VCS revision once at startup for the build-revision header
+	vcsRevision := ""
+	if bi, ok := rtdebug.ReadBuildInfo(); ok {
+		for _, s := range bi.Settings {
+			if s.Key == "vcs.revision" {
+				vcsRevision = s.Value
+				break
+			}
+		}
+	}
+
 	// Wrap with debug middleware (logs API requests when "client" debug is on)
-	handler := debug.WrapHandler(mux)
+	handler := debug.WrapHandler(api.BuildRevisionMiddleware(api.RequestLoggerMiddleware(mux, serverLogger), vcsRevision))
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 
@@ -259,6 +349,12 @@ func main() {
 	log.Printf("Data directory: %s", dataPath)
 	log.Printf("Frontend:       %s", frontendDir)
 	log.Printf("Debug:          %s", debug.Summary())
+	if BuildVersion != "" {
+		log.Printf("Build:          %s", BuildVersion)
+	}
+	if BuildTime != "" {
+		log.Printf("Built at:       %s", BuildTime)
+	}
 	fmt.Println()
 	fmt.Println("  RSS-Lance is ready!")
 	fmt.Printf("  Open in browser --> http://%s\n", addr)

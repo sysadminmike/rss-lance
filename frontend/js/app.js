@@ -12,6 +12,7 @@ import { showSettingsPage, hideSettingsPage, isSettingsPageVisible } from './set
 import { showLogsPage, hideLogsPage, isLogsVisible } from './logs-page.js';
 import { showTableViewerPage, hideTableViewerPage, isTableViewerVisible } from './table-viewer.js';
 import { showServerStatusPage, hideServerStatusPage, isServerStatusVisible } from './server-status-page.js';
+import { showDuckHuntPage, hideDuckHuntPage, isDuckHuntVisible, playQuack } from './duck-hunt.js';
 
 // ── Restore saved preferences immediately ─────────────────────────────────────
 if (localStorage.getItem('rss-lance-theme') === 'light') {
@@ -26,6 +27,35 @@ const _savedListW    = localStorage.getItem('rss-lance-list-w');
 if (_savedSidebarW) document.documentElement.style.setProperty('--sidebar-w', _savedSidebarW + 'px');
 if (_savedListW)    document.documentElement.style.setProperty('--list-w',    _savedListW + 'px');
 
+// ── Build revision tracking ───────────────────────────────────────────────────
+
+let _knownRevision = null;
+
+function checkBuildRevision(res) {
+  const rev = res.headers.get('X-Build-Revision');
+  if (!rev) return;
+  if (_knownRevision === null) {
+    _knownRevision = rev;
+    return;
+  }
+  if (rev !== _knownRevision) {
+    showReloadBanner();
+  }
+}
+
+function showReloadBanner() {
+  if (document.getElementById('reload-banner')) return;
+  const banner = document.createElement('div');
+  banner.id = 'reload-banner';
+  banner.className = 'reload-banner';
+  banner.innerHTML = 'Server has been updated — <a href="#" id="reload-banner-link">reload page</a>';
+  document.body.prepend(banner);
+  document.getElementById('reload-banner-link').addEventListener('click', (e) => {
+    e.preventDefault();
+    location.reload();
+  });
+}
+
 // ── Shared API fetch ──────────────────────────────────────────────────────────
 
 export async function apiFetch(url, options = {}) {
@@ -33,6 +63,7 @@ export async function apiFetch(url, options = {}) {
     headers: { 'Content-Type': 'application/json', ...options.headers },
     ...options,
   });
+  checkBuildRevision(res);
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`${res.status} ${res.statusText}: ${body}`);
@@ -48,6 +79,7 @@ onFeedSelect(async (feedId) => {
   if (isLogsVisible()) hideLogsPage();
   if (isTableViewerVisible()) hideTableViewerPage();
   if (isServerStatusVisible()) hideServerStatusPage();
+  if (isDuckHuntVisible()) hideDuckHuntPage();
   resetReader();  // clear continuous-scroll stream on feed change
   const feeds = window.__rlFeeds || [];
   const feed = feeds.find(f => f.feed_id === feedId);
@@ -148,6 +180,73 @@ function startFeedPolling() {
   }, FEED_POLL_INTERVAL);
 }
 
+// ── Offline status polling ────────────────────────────────────────────────────
+
+const OFFLINE_POLL_INTERVAL = 30_000; // 30 seconds
+let _prevOffline = false;
+
+function getOrCreateOfflineBanner() {
+  let banner = document.getElementById('offline-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'offline-banner';
+    banner.className = 'offline-banner hidden';
+    document.body.prepend(banner);
+  }
+  return banner;
+}
+
+function getOrCreateOfflineDot() {
+  let dot = document.getElementById('offline-dot');
+  if (!dot) {
+    dot = document.createElement('div');
+    dot.id = 'offline-dot';
+    document.body.appendChild(dot);
+  }
+  return dot;
+}
+
+function startOfflinePolling() {
+  // Initialise dot as online immediately
+  getOrCreateOfflineDot();
+
+  setInterval(async () => {
+    try {
+      const res = await fetch('/api/offline-status');
+      if (!res.ok) return;
+      const st = await res.json();
+      const banner = getOrCreateOfflineBanner();
+      const dot = getOrCreateOfflineDot();
+
+      if (!st.enabled) {
+        banner.classList.add('hidden');
+        dot.classList.remove('offline-dot-offline');
+        return;
+      }
+
+      if (st.offline) {
+        const pending = st.pending_changes || 0;
+        banner.textContent = 'Working offline -- ' + pending + ' change' + (pending !== 1 ? 's' : '') + ' pending';
+        banner.classList.remove('hidden', 'offline-banner-online');
+        banner.classList.add('offline-banner-offline');
+        dot.classList.add('offline-dot-offline');
+        _prevOffline = true;
+      } else if (_prevOffline) {
+        // Just came back online
+        banner.textContent = 'Back online -- changes synced';
+        banner.classList.remove('hidden', 'offline-banner-offline');
+        banner.classList.add('offline-banner-online');
+        dot.classList.remove('offline-dot-offline');
+        _prevOffline = false;
+        setTimeout(() => banner.classList.add('hidden'), 5000);
+      } else {
+        banner.classList.add('hidden');
+        dot.classList.remove('offline-dot-offline');
+      }
+    } catch (_) { /* server unreachable */ }
+  }, OFFLINE_POLL_INTERVAL);
+}
+
 // ── Settings panel ────────────────────────────────────────────────────────────
 
 function initSettings() {
@@ -190,6 +289,38 @@ function initSettings() {
   });
   otherItems.appendChild(statusItem);
 
+  // Table viewer link
+  const tableViewerItem = document.createElement('div');
+  tableViewerItem.className = 'feed-item other-item';
+  const tableViewerIcon = document.createElement('div');
+  tableViewerIcon.className = 'feed-icon-placeholder';
+  tableViewerIcon.textContent = '\uD83D\uDDC3';
+  const tableViewerName = document.createElement('span');
+  tableViewerName.className = 'feed-name';
+  tableViewerName.textContent = 'DB Tables';
+  tableViewerItem.appendChild(tableViewerIcon);
+  tableViewerItem.appendChild(tableViewerName);
+  tableViewerItem.addEventListener('click', () => {
+    showTableViewerPage();
+  });
+  otherItems.appendChild(tableViewerItem);
+
+  // Server Status link
+  const serverStatusItem = document.createElement('div');
+  serverStatusItem.className = 'feed-item other-item';
+  const serverStatusIcon = document.createElement('div');
+  serverStatusIcon.className = 'feed-icon-placeholder';
+  serverStatusIcon.textContent = '\u23F1';
+  const serverStatusName = document.createElement('span');
+  serverStatusName.className = 'feed-name';
+  serverStatusName.textContent = 'Server Status';
+  serverStatusItem.appendChild(serverStatusIcon);
+  serverStatusItem.appendChild(serverStatusName);
+  serverStatusItem.addEventListener('click', () => {
+    showServerStatusPage();
+  });
+  otherItems.appendChild(serverStatusItem);
+
   // Settings page link
   const settingsPageItem = document.createElement('div');
   settingsPageItem.className = 'feed-item other-item';
@@ -222,37 +353,34 @@ function initSettings() {
   });
   otherItems.appendChild(logsItem);
 
-  // Table viewer link
-  const tableViewerItem = document.createElement('div');
-  tableViewerItem.className = 'feed-item other-item';
-  const tableViewerIcon = document.createElement('div');
-  tableViewerIcon.className = 'feed-icon-placeholder';
-  tableViewerIcon.textContent = '\uD83D\uDDC3';
-  const tableViewerName = document.createElement('span');
-  tableViewerName.className = 'feed-name';
-  tableViewerName.textContent = 'DB Tables';
-  tableViewerItem.appendChild(tableViewerIcon);
-  tableViewerItem.appendChild(tableViewerName);
-  tableViewerItem.addEventListener('click', () => {
-    showTableViewerPage();
+  // Shoot the Duck easter egg - emoji only, appears for 10s at random intervals (2-5 min)
+  const duckHuntItem = document.createElement('div');
+  duckHuntItem.className = 'feed-item other-item duck-hunt-trigger';
+  duckHuntItem.style.display = 'none';
+  duckHuntItem.textContent = '\uD83E\uDD86';
+  duckHuntItem.title = 'Shoot the Duck';
+  duckHuntItem.addEventListener('click', () => {
+    showDuckHuntPage();
   });
-  otherItems.appendChild(tableViewerItem);
+  otherItems.appendChild(duckHuntItem);
 
-  // Server Status link
-  const serverStatusItem = document.createElement('div');
-  serverStatusItem.className = 'feed-item other-item';
-  const serverStatusIcon = document.createElement('div');
-  serverStatusIcon.className = 'feed-icon-placeholder';
-  serverStatusIcon.textContent = '\u23F1';
-  const serverStatusName = document.createElement('span');
-  serverStatusName.className = 'feed-name';
-  serverStatusName.textContent = 'Server Status';
-  serverStatusItem.appendChild(serverStatusIcon);
-  serverStatusItem.appendChild(serverStatusName);
-  serverStatusItem.addEventListener('click', () => {
-    showServerStatusPage();
-  });
-  otherItems.appendChild(serverStatusItem);
+  // Show the duck emoji for 10s, then hide, repeat every 2-5 min
+  let _duckAppearCount = 0;
+  function scheduleDuckAppearance() {
+    const delayMs = (Math.random() * 3 + 2) * 60 * 1000; // 2-5 minutes
+    setTimeout(() => {
+      duckHuntItem.style.display = '';
+      _duckAppearCount++;
+      if (_duckAppearCount % 10 === 0) {
+        setTimeout(() => { playQuack(800, 0.18); }, 3000);
+      }
+      setTimeout(() => {
+        duckHuntItem.style.display = 'none';
+        scheduleDuckAppearance();
+      }, 10000);
+    }, delayMs);
+  }
+  scheduleDuckAppearance();
 
   // Stop Server button (conditionally shown based on server config)
   const shutdownItem = document.createElement('div');
@@ -362,6 +490,7 @@ function initPaneResize() {
   const origLoadFeeds = loadFeeds;
   window.__rlLoadFeeds = async () => {
     const res = await fetch('/api/feeds');
+    checkBuildRevision(res);
     if (res.ok) window.__rlFeeds = await res.json();
     await origLoadFeeds();
   };
@@ -387,4 +516,5 @@ function initPaneResize() {
   selectFeed(null);
 
   startFeedPolling();
+  startOfflinePolling();
 })();

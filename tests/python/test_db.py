@@ -11,7 +11,7 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "fetcher"))
 
 from db import DB, FEEDS_SCHEMA, ARTICLES_SCHEMA, CATEGORIES_SCHEMA, PENDING_FEEDS_SCHEMA
 

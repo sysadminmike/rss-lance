@@ -24,6 +24,8 @@ import argparse
 import http.server
 import json
 import os
+import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -39,7 +41,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 # ---------------------- Resolve paths ----------------------
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 SERVER_BIN = ROOT / "build" / "rss-lance-server.exe"
 DUCKDB_BIN = ROOT / "tools" / "duckdb.exe"
 FETCHER_DIR = ROOT / "fetcher"
@@ -402,12 +404,33 @@ def lance_table(table_name: str) -> str:
 
 
 # -------------------- Main test sequence --------------------
-def run_e2e(keep: bool = False, verbose: bool = False) -> int:
+def verify_server_alive(api: APIClient, expected_version: str) -> str:
+    """Check if the server is still running with the expected binary.
+
+    Returns: 'ok', 'crashed', or 'replaced'
+    """
+    try:
+        status, srv_status = api.get("/api/server-status")
+    except Exception:
+        return "crashed"
+
+    if status != 200 or not isinstance(srv_status, dict):
+        return "crashed"
+
+    actual = srv_status.get("server", {}).get("build_version", "")
+    if actual != expected_version:
+        return "replaced"
+    return "ok"
+
+
+def run_e2e(keep: bool = False, verbose: bool = False,
+            build_version: str = "") -> int:
     t = TestRunner(verbose=verbose)
     rss_server = None
     server_proc = None
     server_log = None
     temp_dir = None
+    expected_version = build_version  # empty string means skip version checks
 
     try:
         # ---------------------- Prerequisites ----------------------
@@ -420,6 +443,11 @@ def run_e2e(keep: bool = False, verbose: bool = False) -> int:
         if not SERVER_BIN.exists():
             print("\n  Cannot continue without server binary.")
             return t.summary()
+
+        # Reminder: if tests changed, AGENT.md may need updating too
+        print("\n  NOTE: If you changed code or added features, check that AGENT.md")
+        print("        and docs/ are still in sync (API endpoints, log categories,")
+        print("        table counts, test section counts, etc.)")
 
         # --------------- Temp data directory + config ---------------
         t.section("Setup")
@@ -462,6 +490,26 @@ def run_e2e(keep: bool = False, verbose: bool = False) -> int:
             """))
         t.check("Test config written", os.path.exists(config_path))
 
+        # ----------- Seed database with all logging enabled -----------
+        t.section("Seed Database (All Logging On)")
+
+        from seed_e2e_settings import seed_settings, ALL_LOG_SETTINGS
+
+        db = seed_settings(config_path, data_path)
+        t.check("DB opened and settings seeded", db is not None)
+
+        # Verify all log settings via DuckDB before anything else runs
+        settings_table = lance_table("settings")
+        for key in ALL_LOG_SETTINGS:
+            rows = duckdb_query(data_path,
+                f"SELECT value FROM {settings_table} WHERE key = '{key}'")
+            if rows:
+                raw = str(rows[0].get("value", ""))
+                t.check(f"DB: {key} = true", "true" in raw,
+                        f"Got raw: {raw}")
+            else:
+                t.check(f"DB: {key} exists", False, "Not found in DuckDB")
+
         # ------------------ Start local RSS server ------------------
         t.section("Local RSS Server")
         rss_server, rss_port = start_rss_server()
@@ -479,37 +527,9 @@ def run_e2e(keep: bool = False, verbose: bool = False) -> int:
         # ------------ Populate data using Python fetcher ------------
         t.section("Populate Data (Python Fetcher)")
 
-        from config import Config
-        from db import DB
         from feed_parser import fetch_feed
 
-        config = Config(path=config_path)
-        # Override storage path to our temp dir
-        config.storage_path = data_path
-        db = DB(config)
-
-        # Enable ALL log categories (including debug-level) for e2e testing
-        log_settings = {
-            "log.fetcher.enabled": True,
-            "log.fetcher.fetch_cycle": True,
-            "log.fetcher.feed_fetch": True,
-            "log.fetcher.article_processing": True,
-            "log.fetcher.compaction": True,
-            "log.fetcher.tier_changes": True,
-            "log.fetcher.errors": True,
-            "log.api.enabled": True,
-            "log.api.lifecycle": True,
-            "log.api.requests": True,
-            "log.api.settings_changes": True,
-            "log.api.feed_actions": True,
-            "log.api.article_actions": True,
-            "log.api.errors": True,
-            "log.fetcher.sanitization": True,
-        }
-        db.put_settings(log_settings)
-        # Reload cached log settings so log_event() works
-        db._load_log_settings()
-        t.check("All log categories enabled", True)
+        t.log("DB already opened in Seed Database step, reusing it")
 
         feed_alpha_url = f"http://127.0.0.1:{rss_port}/feed_alpha.xml"
         feed_bravo_url = f"http://127.0.0.1:{rss_port}/feed_bravo.xml"
@@ -838,6 +858,44 @@ def run_e2e(keep: bool = False, verbose: bool = False) -> int:
                 server_proc.kill()
                 server_proc = None
             return t.summary()
+
+        # ------------ Build Version Verification ------------
+        if expected_version:
+            t.section("Build Version Verification")
+            status, srv_status = api.get("/api/server-status")
+            if status == 200 and isinstance(srv_status, dict):
+                srv = srv_status.get("server", {})
+                actual_version = srv.get("build_version", "")
+                version_ok = actual_version == expected_version
+                t.check(f"Server build_version matches test ID",
+                        version_ok,
+                        f"Expected {expected_version!r}, got {actual_version!r}")
+                if not version_ok:
+                    print(f"\n  FATAL: Server binary does not match this test build.")
+                    print(f"         Expected: {expected_version}")
+                    print(f"         Got:      {actual_version!r}")
+                    print(f"         You may be testing a stale or different binary.")
+                    print(f"         Rebuild with: $env:BUILD_VERSION=\"{expected_version}\"; .\\build.ps1 server")
+                    return t.summary()
+            else:
+                t.check("Server build_version check", False,
+                        f"Could not query /api/server-status (status={status})")
+                return t.summary()
+        else:
+            t.log("No --build-version given, skipping version gate")
+
+        # ------- Verify all log settings are ON via API --------
+        t.section("Verify Log Settings (API)")
+        status, settings = api.get("/api/settings")
+        t.check("GET /api/settings returns 200", status == 200)
+        if isinstance(settings, dict):
+            for key in ALL_LOG_SETTINGS:
+                val = settings.get(key)
+                t.check(f"API: {key} = true", val is True,
+                        f"Got {val!r}")
+        else:
+            t.check("Settings response is a dict", False,
+                    f"Got type={type(settings).__name__}")
 
         # ------------------ API Tests: List Feeds ------------------
         t.section("API: List Feeds")
@@ -1196,6 +1254,34 @@ def run_e2e(keep: bool = False, verbose: bool = False) -> int:
             t.check("write_cache.pending_reads is present",
                     "pending_reads" in wc,
                     f"WC keys: {list(wc.keys())}")
+
+            # DuckDB external process info (Windows only - may be null on Linux)
+            duckdb_proc = srv_status.get("duckdb_process")
+            if duckdb_proc is not None:
+                t.check("duckdb_process.pid > 0",
+                        isinstance(duckdb_proc.get("pid"), (int, float))
+                        and duckdb_proc["pid"] > 0,
+                        f"Got {duckdb_proc.get('pid')}")
+                t.check("duckdb_process.uptime_seconds >= 0",
+                        isinstance(duckdb_proc.get("uptime_seconds"), (int, float))
+                        and duckdb_proc["uptime_seconds"] >= 0,
+                        f"Got {duckdb_proc.get('uptime_seconds')}")
+
+            # Log buffer resilience stats
+            log_buf = srv_status.get("log_buffer")
+            if log_buf is not None:
+                t.check("log_buffer.memory_entries >= 0",
+                        isinstance(log_buf.get("memory_entries"), (int, float))
+                        and log_buf["memory_entries"] >= 0,
+                        f"Got {log_buf.get('memory_entries')}")
+                t.check("log_buffer.duckdb_entries >= 0",
+                        isinstance(log_buf.get("duckdb_entries"), (int, float))
+                        and log_buf["duckdb_entries"] >= 0,
+                        f"Got {log_buf.get('duckdb_entries')}")
+                t.check("log_buffer.infra_events >= 0",
+                        isinstance(log_buf.get("infra_events"), (int, float))
+                        and log_buf["infra_events"] >= 0,
+                        f"Got {log_buf.get('infra_events')}")
 
         # Method not allowed
         status, _ = api.post("/api/server-status")
@@ -1742,6 +1828,85 @@ def run_e2e(keep: bool = False, verbose: bool = False) -> int:
         else:
             t.log("DuckDB not available - skipping DB verification")
 
+        # -------- DuckDB Process Restart Resilience (Windows) ------
+        t.section("DuckDB: Process Restart Resilience")
+        if sys.platform == "win32" and server_proc:
+            server_pid = server_proc.pid
+            # Find child duckdb.exe processes of the server
+            try:
+                wmic_out = subprocess.check_output(
+                    ["wmic", "process", "where",
+                     f"ParentProcessId={server_pid} and Name='duckdb.exe'",
+                     "get", "ProcessId"],
+                    text=True, stderr=subprocess.DEVNULL, timeout=10
+                )
+                duck_pids = [
+                    int(line.strip()) for line in wmic_out.strip().splitlines()
+                    if line.strip().isdigit()
+                ]
+            except Exception as exc:
+                duck_pids = []
+                t.log(f"Could not find child duckdb.exe: {exc}")
+
+            if duck_pids:
+                duck_pid = duck_pids[0]
+                t.log(f"Found duckdb.exe child process (PID {duck_pid}), killing it")
+
+                # Verify API works before kill
+                pre_status, pre_feeds = api.get("/api/feeds")
+                t.check("API works before duckdb kill",
+                        pre_status == 200, f"Got {pre_status}")
+
+                # Kill the duckdb.exe child process
+                try:
+                    os.kill(duck_pid, signal.SIGTERM)
+                except OSError:
+                    # SIGTERM may not work on Windows, try taskkill
+                    subprocess.run(
+                        ["taskkill", "/F", "/PID", str(duck_pid)],
+                        capture_output=True, timeout=5
+                    )
+                time.sleep(1)  # Give the server time to detect the death
+
+                # API should still work -- server auto-restarts duckdb.exe
+                post_status, post_feeds = api.get("/api/feeds")
+                t.check("API works after duckdb kill (auto-restart)",
+                        post_status == 200, f"Got {post_status}")
+
+                if post_status == 200 and isinstance(post_feeds, list):
+                    t.check("Feed data intact after restart",
+                            len(post_feeds) >= 3,
+                            f"Expected >= 3 feeds, got {len(post_feeds)}")
+
+                # Verify a new duckdb.exe is running
+                try:
+                    wmic_out2 = subprocess.check_output(
+                        ["wmic", "process", "where",
+                         f"ParentProcessId={server_pid} and Name='duckdb.exe'",
+                         "get", "ProcessId"],
+                        text=True, stderr=subprocess.DEVNULL, timeout=10
+                    )
+                    new_pids = [
+                        int(line.strip()) for line in wmic_out2.strip().splitlines()
+                        if line.strip().isdigit()
+                    ]
+                except Exception:
+                    new_pids = []
+
+                if new_pids:
+                    new_pid = new_pids[0]
+                    t.check("New duckdb.exe has different PID",
+                            new_pid != duck_pid,
+                            f"Old={duck_pid}, New={new_pid}")
+                    t.log(f"New duckdb.exe PID: {new_pid}")
+                else:
+                    t.check("New duckdb.exe spawned after kill", False,
+                            "No child duckdb.exe found")
+            else:
+                t.log("No child duckdb.exe found (may not be Windows build)")
+        else:
+            t.log("Skipping (Windows-only test)")
+
         # -------- Queue Feed (via API, like frontend would) --------
         t.section("API: Queue Feed")
         status, resp = api.post("/api/feeds", {"url": "http://example.com/new-feed.xml"})
@@ -1793,7 +1958,7 @@ def run_e2e(keep: bool = False, verbose: bool = False) -> int:
             t.check("All filtered entries are fetcher service", all_fetcher)
 
         # Filter by service=api - should include server lifecycle + actions
-        status, api_logs = api.get("/api/logs?service=api&limit=50")
+        status, api_logs = api.get("/api/logs?service=api&limit=500")
         t.check("GET /api/logs?service=api returns 200", status == 200)
         if isinstance(api_logs, dict):
             a_entries = api_logs.get("entries", [])
@@ -1826,6 +1991,55 @@ def run_e2e(keep: bool = False, verbose: bool = False) -> int:
                 t.check("API logs: mark-all-read action logged",
                         has_mark_all,
                         f"Messages: {messages}")
+
+            # Check for article_actions logs (read/star from earlier test sections)
+            article_action_entries = [e for e in a_entries if e.get("category") == "article_actions"]
+            t.log(f"Article action log entries: {len(article_action_entries)}")
+            t.check("API logs: article_actions entries exist",
+                    len(article_action_entries) >= 1,
+                    f"Got {len(article_action_entries)} -- read/star/unread/unstar should log")
+            if article_action_entries:
+                messages = [e.get("message", "") for e in article_action_entries]
+                has_read = any("read" in m.lower() for m in messages)
+                has_star = any("star" in m.lower() for m in messages)
+                t.check("API logs: article read action logged", has_read,
+                        f"Messages: {messages[:5]}")
+                t.check("API logs: article star action logged", has_star,
+                        f"Messages: {messages[:5]}")
+
+            # Check for settings_changes logs (from all the PUT /api/settings calls)
+            settings_entries = [e for e in a_entries if e.get("category") == "settings_changes"]
+            t.log(f"Settings change log entries: {len(settings_entries)}")
+            t.check("API logs: settings_changes entries exist",
+                    len(settings_entries) >= 1,
+                    f"Got {len(settings_entries)} -- PUT /api/settings should log")
+
+            # Check for requests logs (from all the API calls above)
+            requests_entries = [e for e in a_entries if e.get("category") == "requests"]
+            t.log(f"API request log entries: {len(requests_entries)}")
+            t.check("API logs: requests entries exist",
+                    len(requests_entries) >= 1,
+                    f"Got {len(requests_entries)} -- API calls should log when log.api.requests is on")
+
+            # Check for errors logs (from 404/400 responses in error handling section)
+            errors_entries = [e for e in a_entries if e.get("category") == "errors"]
+            t.log(f"API error log entries: {len(errors_entries)}")
+            # errors may be 0 if no 4xx/5xx happened before this point -- that's ok,
+            # we verify the category works below after triggering a 404
+            if errors_entries:
+                t.check("API logs: errors entries have warn level",
+                        all(e.get("level") == "warn" for e in errors_entries),
+                        f"Levels: {[e.get('level') for e in errors_entries[:5]]}")
+
+        # Trigger a 404 to generate an errors log entry, then verify it
+        api.get("/api/nonexistent-endpoint-for-error-log-test")
+        time.sleep(1)
+        status, err_check = api.get("/api/logs?service=api&category=errors&limit=10")
+        if isinstance(err_check, dict):
+            err_entries = err_check.get("entries", [])
+            t.check("API logs: errors category has entries after 404",
+                    len(err_entries) >= 1,
+                    f"Got {len(err_entries)}")
 
         # Write a fresh error log so the level filter has something to find
         # (the original error entry may have been removed by the trim test)
@@ -2016,6 +2230,211 @@ def run_e2e(keep: bool = False, verbose: bool = False) -> int:
                 pass
             server_proc = None  # already stopped via API
 
+        # ======== Offline Mode: Lance data disappears (non-Windows) ========
+        # On Windows, open file handles prevent renaming the data dir while
+        # the server is running, so this test is skipped there.
+        if sys.platform == "win32":
+            t.section("Offline Mode (skipped on Windows)")
+            t.log("Skipping offline data-disappear tests (Windows file locking)")
+        else:
+            t.section("Offline Mode: Lance data disappears")
+
+            # Seed offline settings into the Lance DB before starting server
+            t.log("Seeding offline settings...")
+            offline_cache_file = os.path.join(temp_dir, "offline_cache.db")
+            db.put_settings({
+                "offline_enabled":                "true",
+                "offline_snapshot_interval_mins":  "1",
+                "offline_cache_path":             offline_cache_file.replace(os.sep, "/"),
+            })
+
+            # Create a separate local dir for DuckDB (simulates duckdb_path config)
+            duckdb_local = os.path.join(temp_dir, "duckdb_local")
+            os.makedirs(duckdb_local, exist_ok=True)
+
+            # Rewrite config with duckdb_path + show_shutdown=true so we can
+            # cleanly stop the server at the end
+            with open(config_path, "w") as f:
+                f.write(textwrap.dedent(f"""\
+                    [storage]
+                    type = "local"
+                    path = "{data_path.replace(os.sep, '/')}"
+                    duckdb_path = "{duckdb_local.replace(os.sep, '/')}"
+
+                    [fetcher]
+                    interval_minutes = 30
+                    max_concurrent = 2
+                    user_agent = "RSS-Lance-E2E-Test/1.0"
+
+                    [server]
+                    host = "127.0.0.1"
+                    port = {api_port}
+                    frontend_dir = "{str(ROOT / 'frontend').replace(os.sep, '/')}"
+                    show_shutdown = true
+
+                    [compaction]
+                    articles      = 999
+                    feeds         = 999
+                    categories    = 999
+                    pending_feeds = 999
+                """))
+
+            # Start server with offline mode
+            server_log = open(server_log_path, "w")
+            server_proc = subprocess.Popen(
+                [str(SERVER_BIN), "-config", config_path],
+                stdout=server_log,
+                stderr=subprocess.STDOUT,
+                cwd=str(ROOT),
+                env=server_env,
+            )
+
+            server_ready = False
+            for i in range(60):
+                if server_proc.poll() is not None:
+                    server_log.close()
+                    with open(server_log_path) as f:
+                        log_content = f.read()
+                    t.check("Server started (offline)", False,
+                            f"Exited with code {server_proc.returncode}\n{log_content[:500]}")
+                    server_proc = None
+                    break
+                try:
+                    status, _ = api.get("/api/feeds")
+                    if status == 200:
+                        server_ready = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.5)
+            else:
+                t.check("Server started (offline)", False, "Did not respond within 30s")
+
+            if server_ready:
+                t.check("Server started (offline)", True)
+
+                # Verify offline mode is enabled but not yet offline
+                status, ost = api.get("/api/offline-status")
+                t.check("GET /api/offline-status returns 200", status == 200)
+                if isinstance(ost, dict):
+                    t.check("Offline mode enabled", ost.get("enabled") == True,
+                            f"Got: {ost}")
+                    t.check("Not offline yet", ost.get("offline") == False,
+                            f"Got: {ost}")
+
+                # Wait for initial snapshot to complete (last_snapshot becomes non-empty)
+                t.log("Waiting for initial offline snapshot...")
+                snapshot_ready = False
+                for i in range(30):  # up to 15s
+                    status, ost = api.get("/api/offline-status")
+                    if isinstance(ost, dict) and ost.get("last_snapshot"):
+                        snapshot_ready = True
+                        break
+                    time.sleep(0.5)
+                t.check("Initial snapshot completed",
+                        snapshot_ready,
+                        f"last_snapshot still empty after 15s")
+
+                if snapshot_ready:
+                    cached_count = ost.get("cache_articles", 0)
+                    t.log(f"Snapshot done: {cached_count} articles cached")
+                    t.check("Snapshot cached articles", cached_count > 0,
+                            f"Expected >0, got {cached_count}")
+
+                    # ---- Simulate Lance disappearing: rename data_path ----
+                    data_path_hidden = data_path + "_hidden"
+                    t.log(f"Renaming data dir to simulate Lance failure...")
+                    try:
+                        os.rename(data_path, data_path_hidden)
+                        rename_ok = True
+                    except OSError as e:
+                        rename_ok = False
+                        t.check("Rename data dir", False, f"OS error: {e}")
+
+                    if rename_ok:
+                        t.check("Data dir renamed", not os.path.exists(data_path))
+
+                        # Trigger goOffline by making an API call that hits Lance
+                        t.log("Triggering offline transition via API call...")
+                        status, body = api.get("/api/articles")
+                        # The server should still respond (from cache or with error)
+                        # but internally it should have called goOffline()
+
+                        # Poll /api/offline-status until offline=true (up to 10s)
+                        went_offline = False
+                        for i in range(20):
+                            status, ost = api.get("/api/offline-status")
+                            if isinstance(ost, dict) and ost.get("offline") == True:
+                                went_offline = True
+                                break
+                            # Make another API request to trigger goOffline if
+                            # the first one didn't (e.g. came from write cache)
+                            api.get("/api/feeds")
+                            time.sleep(0.5)
+                        t.check("Server went offline after data dir removed",
+                                went_offline,
+                                f"offline-status: {ost}")
+
+                        if went_offline:
+                            # Verify we can still read cached data while offline
+                            status, arts = api.get("/api/articles")
+                            t.check("Articles still served while offline",
+                                    status == 200,
+                                    f"Got status {status}")
+                            if isinstance(arts, list):
+                                t.check("Cached articles returned",
+                                        len(arts) > 0,
+                                        f"Got {len(arts)} articles")
+
+                            pending_before = 0
+                            status, ost = api.get("/api/offline-status")
+                            if isinstance(ost, dict):
+                                pending_before = ost.get("pending_changes", 0)
+
+                            # ---- Restore data dir: simulate reconnect ----
+                            t.log("Restoring data dir...")
+                            os.rename(data_path_hidden, data_path)
+                            t.check("Data dir restored", os.path.exists(data_path))
+
+                            # Wait for health probe to detect recovery (5s interval
+                            # when offline, give it up to 20s)
+                            t.log("Waiting for server to come back online...")
+                            came_online = False
+                            for i in range(40):  # up to 20s
+                                status, ost = api.get("/api/offline-status")
+                                if isinstance(ost, dict) and ost.get("offline") == False:
+                                    came_online = True
+                                    break
+                                time.sleep(0.5)
+                            t.check("Server came back online",
+                                    came_online,
+                                    f"offline-status after 20s: {ost}")
+
+                            if came_online:
+                                # Verify data is accessible again
+                                status, arts = api.get("/api/articles")
+                                t.check("Articles accessible after recovery",
+                                        status == 200 and isinstance(arts, list) and len(arts) > 0,
+                                        f"status={status}, articles={len(arts) if isinstance(arts, list) else 'N/A'}")
+                        else:
+                            # Even if offline detection failed, restore the dir
+                            t.log("Restoring data dir (offline detection failed)...")
+                            os.rename(data_path_hidden, data_path)
+                    # end if rename_ok
+
+                # Stop the server for this section
+                if server_proc:
+                    server_proc.terminate()
+                    try:
+                        server_proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        server_proc.kill()
+                    server_proc = None
+                try:
+                    server_log.close()
+                except Exception:
+                    pass
+
     except KeyboardInterrupt:
         print("\n\n  Interrupted by user.")
     except Exception as exc:
@@ -2023,6 +2442,26 @@ def run_e2e(keep: bool = False, verbose: bool = False) -> int:
         import traceback
         traceback.print_exc()
     finally:
+        # -- Post-failure version check (before cleanup kills the server) --
+        if expected_version and t.failed > 0 and server_proc is not None:
+            state = verify_server_alive(api, expected_version)
+            if state == "crashed":
+                print(f"\n  {'!' * 60}")
+                print(f"  WARNING: Server is not responding -- it may have crashed.")
+                print(f"  The test failure(s) above may not be real test failures")
+                print(f"  but caused by the server crashing.")
+                print(f"  Please rerun the test. If the same test fails again,")
+                print(f"  it may be crashing the server -- please open a GitHub issue.")
+                print(f"  {'!' * 60}")
+            elif state == "replaced":
+                print(f"\n  {'!' * 60}")
+                print(f"  WARNING: Server binary was replaced during testing!")
+                print(f"  Expected build_version: {expected_version}")
+                print(f"  Another build likely overwrote the binary. All test")
+                print(f"  results may be invalid. Please rerun when no other")
+                print(f"  builds are running.")
+                print(f"  {'!' * 60}")
+
         # ------------------------- Cleanup -------------------------
         print(f"\n{'=' * 60}")
         print(f"  Cleanup")
@@ -2068,6 +2507,10 @@ if __name__ == "__main__":
                         help="Keep temp data directory after test run")
     parser.add_argument("--verbose", action="store_true",
                         help="Show HTTP status for every request")
+    parser.add_argument("--build-version", default="",
+                        help="Expected build version (e.g. test-abc123). "
+                             "If set, verifies /api/server-status build_version matches.")
     args = parser.parse_args()
 
-    sys.exit(run_e2e(keep=args.keep, verbose=args.verbose))
+    sys.exit(run_e2e(keep=args.keep, verbose=args.verbose,
+                     build_version=args.build_version))

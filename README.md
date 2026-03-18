@@ -54,36 +54,11 @@ The **Python fetcher** (writer) and the **Go server** (reader/writer) are comple
 
 When your data lives on S3 or Cloudflare R2, you inherit the cloud provider's authentication and security model. There's no application-level auth to configure, no passwords to manage, no ports to firewall. Access control is handled entirely by IAM policies, bucket permissions, and pre-signed URLs - the same battle-tested infrastructure that secures everything else on AWS/Cloudflare.
 
-This means you can:
+See [docs/s3.md](docs/s3.md) for cloud storage setup and [docs/database.md](docs/database.md#cloud-security) for details on the security model.
 
-- **Run everything on one machine** - fetcher and server side by side, Lance files in `./data`
-- **Split across machines** - fetcher on a Linux server, server on your Windows laptop, Lance files on a network share (Samba/NFS)
-- **Put data on S3/R2** - fetcher as an AWS Lambda, server on a Raspberry Pi, Lance files on S3 - secured by IAM, not by your app
-- **Back up by copying files** - `rsync`, Syncthing, or just `cp -r data/ /backup/` - no database dumps, no export tools
+### Backup with rsync / Syncthing / cp
 
-### Backup with rsync / Syncthing
-
-Because the data is just files, you can use standard file-sync tools to keep copies across machines:
-
-```bash
-# rsync to a backup server
-rsync -av --delete ./data/ user@backup-server:/backups/rss-lance/
-
-# Or use Syncthing to keep two machines in sync automatically
-# Just point Syncthing at the data/ folder on both machines
-#
-# WARNING: Syncthing is file-sync, NOT a shared filesystem. Only one
-# rss-lance instance (fetcher + server pair) should write to a given
-# dataset at a time. The backup copy is for disaster recovery, not
-# for running a second reader/writer. Lance's MVCC concurrency model
-# relies on atomic file operations on a shared filesystem (NFS, Samba,
-# S3) - Syncthing's eventual-consistency replication cannot provide
-# this. If two instances write independently and Syncthing merges the
-# files, the manifest history will diverge and the table may corrupt.
-# See docs/database.md for full concurrency details. 
-```
-
-> **Why not just use SQLite here?** SQLite locks the entire database file on write - if Syncthing tries to copy it mid-transaction, the backup may be corrupt. Lance files are immutable once written. A new version never modifies existing files, so `rsync` / Syncthing always copies consistent data.
+Because the data is just files, you can back up with `rsync`, Syncthing, or plain `cp -r` - no database dumps needed. Lance files are immutable once written, so copies are always consistent. See [docs/database.md](docs/database.md#backup-with-rsync--syncthing) for details and caveats.
 
 ---
 
@@ -193,9 +168,13 @@ Article content is cleaned at two levels to protect against XSS, tracking, and c
 
 This defence-in-depth approach means that even if one layer is bypassed, the other still protects the user. See [docs/sanitization.md](docs/sanitization.md) for full details on what is stripped, how detection works, and what content is preserved.
 
+### Offline Mode
+
+If the Lance data source becomes unreachable (NFS share unmounted, S3 outage, network drop), the server automatically falls back to a local DuckDB cache. Reads are served from the cache, writes are queued locally, and everything replays back to Lance when the connection returns. Enable it from **Settings → Offline Mode** in the browser. See [docs/offline.md](docs/offline.md) for details.
+
 ### DB Table Viewer
 
-Browse raw database tables via **Other → DB Tables** in the sidebar. Select any table to see its data with Prev/Next pagination. The page size defaults to 200 rows and can be changed in **Other → Advanced Settings** under **Server → Table viewer page size**.
+Browse raw database tables via **Other → DB Tables** in the sidebar. Select any table to see its data with Prev/Next pagination.
 
 ### Custom CSS
 
@@ -252,6 +231,7 @@ rss-lance/
 | S3 / cloud storage | [docs/s3.md](docs/s3.md) |
 | Database & concurrency | [docs/database.md](docs/database.md) |
 | Logging | [docs/logging.md](docs/logging.md) |
+| Offline mode | [docs/offline.md](docs/offline.md) |
 | REST API & schema reference | [docs/api.md](docs/api.md) |
 
 ---

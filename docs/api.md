@@ -64,9 +64,10 @@ requests to `/api/shutdown` return 404.
 
 `GET /api/server-status` returns live Go runtime stats including memory usage
 (`runtime.MemStats`), goroutine count, GC pause history, server/host uptime,
-build info (VCS revision, Go version), and write cache stats (pending changes,
-last flush time). Used by the Server Status frontend page which auto-refreshes
-every 5 seconds.
+build info (VCS revision, Go version), write cache stats (pending changes,
+last flush time), and DuckDB external process info (Windows only -- includes
+process PID and uptime). Used by the Server Status frontend page which
+auto-refreshes every 5 seconds.
 
 ## Logs Endpoint
 
@@ -90,7 +91,7 @@ tables. Supports query parameters:
 
 | Param | Default | Description |
 |---|---|---|
-| `limit` | 200 (configurable via `server.table_page_size` in Advanced Settings) | Max rows per page (capped at 5000) |
+| `limit` | 200 (configurable via `server.table_page_size` in Settings page) | Max rows per page (capped at 5000) |
 | `offset` | 0 | Row offset for pagination |
 
 ## Schema

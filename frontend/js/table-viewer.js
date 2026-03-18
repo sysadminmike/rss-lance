@@ -9,6 +9,7 @@ import { hideStatusPage, isStatusVisible } from './status.js';
 import { hideSettingsPage, isSettingsPageVisible } from './settings-page.js';
 import { hideLogsPage, isLogsVisible } from './logs-page.js';
 import { hideServerStatusPage, isServerStatusVisible } from './server-status-page.js';
+import { hideDuckHuntPage, isDuckHuntVisible } from './duck-hunt.js';
 
 let _tableViewerVisible = false;
 let _currentTable = '';
@@ -22,6 +23,7 @@ export async function showTableViewerPage() {
   if (isSettingsPageVisible()) hideSettingsPage();
   if (isLogsVisible()) hideLogsPage();
   if (isServerStatusVisible()) hideServerStatusPage();
+  if (isDuckHuntVisible()) hideDuckHuntPage();
 
   const app = document.getElementById('app');
   const listPane = document.getElementById('article-list-pane');

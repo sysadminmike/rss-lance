@@ -7,7 +7,7 @@ import os
 import unittest
 
 # Allow imports from fetcher/
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "fetcher"))
 
 from content_cleaner import strip_tracking_pixels, strip_dangerous_html, strip_tracking_params
 

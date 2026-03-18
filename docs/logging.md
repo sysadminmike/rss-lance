@@ -25,6 +25,75 @@ Each service writes to its own Lance table. The `/api/logs` endpoint queries bot
 
 ---
 
+## 3-Tier Log Write Path (Go Server)
+
+The Go server uses a resilient 3-tier write path so log entries are never lost during storage outages:
+
+```
+  Log Entry
+     │
+     ▼
+┌──────────┐   success   ┌───────────────┐
+│  Lance   │◄────────────│  logBuffer    │  Tier 1: Primary (Lance)
+│  (log_api│             │  (in-memory)  │
+│  .lance) │             └───────┬───────┘
+└──────────┘                     │ failure
+                                 ▼
+                          ┌───────────────┐
+                          │  DuckDB       │  Tier 2: Fallback (cached_logs)
+                          │  cached_logs  │
+                          │  (offline_    │
+                          │  cache.db)    │
+                          └───────┬───────┘
+                                  │ failure
+                                  ▼
+                          ┌───────────────┐
+                          │  Memory       │  Tier 3: Last resort (logBuffer)
+                          │  (prepend to  │  Subject to memory cap
+                          │   logBuffer)  │
+                          └───────────────┘
+```
+
+### How It Works
+
+1. **Normal operation**: Log entries buffer in memory (`logBuffer`, batch of 20 or 30s timer), then flush to Lance via the lancedb-go native SDK.
+
+2. **Lance unavailable**: If the Lance write fails, entries fall back to the `cached_logs` table in `offline_cache.db` (DuckDB). An infrastructure event is recorded.
+
+3. **DuckDB also unavailable**: If both Lance and DuckDB fail, entries stay in the in-memory `logBuffer` and will retry on the next flush cycle. A memory cap (default: 100,000 entries, configurable via `log.memory_cap`) prevents unbounded growth -- oldest entries are dropped if the cap is exceeded.
+
+4. **Drain-back**: A background goroutine (`runLogDrain`) watches for Lance recovery. When Lance becomes writable again, it drains `cached_logs` in batches of 500, writing them back to Lance and deleting from DuckDB. The `handleReconnect` path also triggers a drain.
+
+5. **Read path**: `GET /api/logs` queries both Lance tables AND `cached_logs`, merging results by timestamp so undrained entries are visible immediately.
+
+### Infrastructure Events
+
+Storage problems are captured in a fixed-size ring buffer (`infraRing`, 64 entries) with category `storage_events`. These events are drained into Lance alongside normal logs when Lance recovers, providing a record of what went wrong.
+
+### Configuration
+
+| Setting          | Default  | Description                              |
+|------------------|----------|------------------------------------------|
+| `log.memory_cap` | `100000` | Max entries held in memory before oldest are dropped |
+
+### Monitoring
+
+The `GET /api/server-status` response includes a `log_buffer` section:
+
+```json
+{
+  "log_buffer": {
+    "memory_entries": 0,
+    "duckdb_entries": 5,
+    "infra_events": 2
+  }
+}
+```
+
+The `GET /api/offline-status` response includes `pending_logs` showing cached_logs count.
+
+---
+
 ## Log Table Schema
 
 Both `log_api` and `log_fetcher` tables share an identical schema:
@@ -54,6 +123,7 @@ Written to `log_fetcher` by the Python fetcher daemon.
 | article_processing  | log.fetcher.article_processing    | off     | Debug: each individual article       |
 | compaction          | log.fetcher.compaction            | on      | Table compaction events              |
 | tier_changes        | log.fetcher.tier_changes          | on      | Adaptive frequency tier changes      |
+| sanitization        | log.fetcher.sanitization          | off     | Debug: what the sanitizer stripped    |
 | errors              | log.fetcher.errors                | on      | Fetch errors and failures            |
 
 ### API Server Categories
@@ -68,6 +138,7 @@ Written to `log_api` by the Go HTTP server.
 | feed_actions       | log.api.feed_actions               | on      | Add feed, mark-all-read, etc.        |
 | article_actions    | log.api.article_actions            | off     | Read/star individual articles        |
 | errors             | log.api.errors                     | on      | Error responses                      |
+| storage_events     | (always on)                        | on      | Log storage failover/recovery events |
 
 ### Master Toggles
 

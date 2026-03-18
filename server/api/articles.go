@@ -100,6 +100,14 @@ func (h *ArticlesHandler) setRead(w http.ResponseWriter, _ *http.Request, id str
 		jsonError(w, err, http.StatusInternalServerError)
 		return
 	}
+	if h.logger != nil {
+		action := "read"
+		if !read {
+			action = "unread"
+		}
+		h.logger.LogJSON("info", "article_actions", "Article marked "+action,
+			map[string]any{"article_id": id, "read": read})
+	}
 	jsonOK(w, map[string]bool{"ok": true})
 }
 
@@ -107,6 +115,14 @@ func (h *ArticlesHandler) setStarred(w http.ResponseWriter, _ *http.Request, id 
 	if err := h.store.SetArticleStarred(id, starred); err != nil {
 		jsonError(w, err, http.StatusInternalServerError)
 		return
+	}
+	if h.logger != nil {
+		action := "starred"
+		if !starred {
+			action = "unstarred"
+		}
+		h.logger.LogJSON("info", "article_actions", "Article "+action,
+			map[string]any{"article_id": id, "starred": starred})
 	}
 	jsonOK(w, map[string]bool{"ok": true})
 }

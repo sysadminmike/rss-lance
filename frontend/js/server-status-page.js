@@ -10,6 +10,7 @@ import { hideStatusPage, isStatusVisible } from './status.js';
 import { hideSettingsPage, isSettingsPageVisible } from './settings-page.js';
 import { hideLogsPage, isLogsVisible } from './logs-page.js';
 import { hideTableViewerPage, isTableViewerVisible } from './table-viewer.js';
+import { hideDuckHuntPage, isDuckHuntVisible } from './duck-hunt.js';
 
 let _visible = false;
 let _refreshTimer = null;
@@ -28,6 +29,7 @@ export async function showServerStatusPage() {
   if (isSettingsPageVisible()) hideSettingsPage();
   if (isLogsVisible()) hideLogsPage();
   if (isTableViewerVisible()) hideTableViewerPage();
+  if (isDuckHuntVisible()) hideDuckHuntPage();
 
   const app = document.getElementById('app');
   const listPane = document.getElementById('article-list-pane');
@@ -42,7 +44,6 @@ export async function showServerStatusPage() {
   if (!container) {
     container = document.createElement('div');
     container.id = 'server-status-page';
-    container.className = 'status-inner';
     app.appendChild(container);
   }
   container.classList.remove('hidden');
@@ -114,7 +115,10 @@ async function loadHistory() {
 
 async function fetchAndRender(container) {
   try {
-    const data = await apiFetch('/api/server-status');
+    const [data, offlineData] = await Promise.all([
+      apiFetch('/api/server-status'),
+      fetch('/api/offline-status').then(r => r.ok ? r.json() : {}).catch(() => {}),
+    ]);
     if (!_visible) return;
 
     // Accumulate history
@@ -134,7 +138,7 @@ async function fetchAndRender(container) {
       _gcPauseHistory.push(lastPause);
     }
 
-    renderPage(container, data);
+    renderPage(container, data, offlineData || {});
   } catch (e) {
     if (_visible) {
       container.innerHTML = `<div class="status-error">Error loading server status: ${e.message}</div>`;
@@ -142,27 +146,39 @@ async function fetchAndRender(container) {
   }
 }
 
-function renderPage(container, data) {
+function renderPage(container, data, offlineData = {}) {
   const srv = data.server || {};
   const host = data.host || {};
   const mem = data.memory || {};
   const gc = data.gc || {};
   const cache = data.write_cache || {};
+  const duckdb = data.duckdb_process || null;
 
   const refreshLabel = `Auto-refresh: ${_refreshIntervalMs / 1000}s`;
 
   container.innerHTML = `
+    <div class="status-inner">
     <h1 class="status-title">Server Status</h1>
     <p class="status-subtitle">${host.hostname || 'unknown'} - ${srv.os || ''}/${srv.arch || ''} - ${srv.go_version || ''}</p>
 
     <div class="status-cards">
-      ${statCard('Server Up', formatDuration(srv.uptime_seconds), '\u23F1')}
       ${statCard('Host Up', host.uptime_seconds >= 0 ? formatDuration(host.uptime_seconds) : 'N/A', '\uD83D\uDDA5')}
-      ${statCard('Goroutines', srv.goroutines, '\uD83E\udDF5')}
-      ${statCard('GC Runs', gc.num_gc || 0, '\u267B')}
+      ${statCard('RSS-Lance Up', formatDuration(srv.uptime_seconds), '\u23F1')}
+      ${duckdb ? statCard('DuckDB Up', formatDuration(duckdb.uptime_seconds), '\uD83E\uDD86') : ''}
+      ${(() => {
+        const enabled = offlineData.enabled;
+        const offline = offlineData.offline;
+        const label = 'Lance Tables';
+        if (!enabled) return statCard(label, 'Online', '\uD83D\uDDC4', 'var(--accent)');
+        return offline
+          ? statCard(label, 'Offline', '\uD83D\uDDC4', '#f97316')
+          : statCard(label, 'Online', '\uD83D\uDDC4', 'var(--accent)');
+      })()}
     </div>
 
     <div class="status-cards">
+      ${statCard('Goroutines', srv.goroutines, '\uD83E\udDF5')}
+      ${statCard('GC Runs', gc.num_gc || 0, '\u267B')}
       ${statCard('Heap Used', formatBytes(mem.heap_alloc_bytes), '\uD83D\uDCE6')}
       ${statCard('Heap Sys', formatBytes(mem.heap_sys_bytes), '\uD83D\uDCBE')}
       ${statCard('Stack', formatBytes(mem.stack_in_use_bytes), '\uD83D\uDDC2')}
@@ -227,13 +243,16 @@ function renderPage(container, data) {
       <table class="status-table">
         <tbody>
           <tr><td>PID</td><td>${srv.pid}</td></tr>
+          ${duckdb ? `<tr><td>DuckDB PID</td><td>${duckdb.pid}</td></tr>` : ''}
           <tr><td>Go Version</td><td>${srv.go_version}</td></tr>
           <tr><td>OS / Arch</td><td>${srv.os} / ${srv.arch}</td></tr>
           <tr><td>CPUs</td><td>${srv.num_cpu}</td></tr>
           <tr><td>Hostname</td><td>${host.hostname || 'unknown'}</td></tr>
           <tr><td>Started</td><td>${srv.start_time ? new Date(srv.start_time).toLocaleString() : 'N/A'}</td></tr>
           <tr><td>Build Revision</td><td>${srv.build_vcs_revision || 'N/A'}</td></tr>
-          <tr><td>Build Time</td><td>${srv.build_vcs_time || 'N/A'}</td></tr>
+          <tr><td>VCS Time</td><td>${srv.build_vcs_time || 'N/A'}</td></tr>
+          <tr><td>Build Time</td><td>${srv.build_time ? new Date(srv.build_time).toLocaleString() : 'N/A'}</td></tr>
+          <tr><td>Build Version</td><td>${srv.build_version || 'N/A'}</td></tr>
           <tr><td>Heap Objects</td><td>${(mem.heap_objects || 0).toLocaleString()}</td></tr>
           <tr><td>Total Alloc (lifetime)</td><td>${formatBytes(mem.total_alloc_bytes)}</td></tr>
           <tr><td>Mallocs / Frees</td><td>${(mem.mallocs || 0).toLocaleString()} / ${(mem.frees || 0).toLocaleString()}</td></tr>
@@ -243,6 +262,7 @@ function renderPage(container, data) {
     </div>
 
     <p class="status-subtitle" style="text-align:right;margin-top:8px">${refreshLabel} | ${_timestamps.length} data points</p>
+    </div>
   `;
 }
 
@@ -311,11 +331,12 @@ function renderBarChart(data, color) {
 
 // ── Formatting Helpers ──────────────────────────────────────────────────────
 
-function statCard(label, value, icon) {
+function statCard(label, value, icon, valueColor = null) {
+  const colorStyle = valueColor ? ` style="color:${valueColor}"` : '';
   return `
     <div class="stat-card">
       <div class="stat-icon">${icon}</div>
-      <div class="stat-value">${value}</div>
+      <div class="stat-value"${colorStyle}>${value}</div>
       <div class="stat-label">${label}</div>
     </div>`;
 }

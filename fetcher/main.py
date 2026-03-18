@@ -13,6 +13,8 @@ import argparse
 import concurrent.futures
 import json
 import logging
+import os
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -305,6 +307,23 @@ def add_feed(url: str, db: DB, config: Config) -> None:
         log.warning("Feed added but initial fetch failed: %s", result.error)
 
 
+def _get_git_info() -> tuple[str, str]:
+    """Return (commit_short, commit_date) from git, or empty strings."""
+    try:
+        repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        rev = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repo_dir, stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+        ts = subprocess.check_output(
+            ["git", "log", "-1", "--format=%cI"],
+            cwd=repo_dir, stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+        return rev, ts
+    except Exception:
+        return "", ""
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="RSS-Lance feed fetcher")
     parser.add_argument("--once", action="store_true",
@@ -312,6 +331,12 @@ def main() -> None:
     parser.add_argument("--add", metavar="URL",
                         help="Add a new feed by URL then exit")
     args = parser.parse_args()
+
+    git_rev, git_date = _get_git_info()
+    if git_rev:
+        log.info("Build: %s", git_rev)
+    if git_date:
+        log.info("Built at: %s", git_date)
 
     config = Config()
     db = DB(config)

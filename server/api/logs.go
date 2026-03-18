@@ -35,6 +35,16 @@ func (h *LogsHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		Limit:    queryInt(q.Get("limit"), 100),
 		Offset:   queryInt(q.Get("offset"), 0),
 	}
+	if st := q.Get("start_time"); st != "" {
+		if t, err := time.Parse(time.RFC3339, st); err == nil {
+			opts.StartTime = &t
+		}
+	}
+	if et := q.Get("end_time"); et != "" {
+		if t, err := time.Parse(time.RFC3339, et); err == nil {
+			opts.EndTime = &t
+		}
+	}
 
 	// Validate service filter
 	if opts.Service != "" && opts.Service != "api" && opts.Service != "fetcher" {

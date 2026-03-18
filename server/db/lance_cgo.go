@@ -10,11 +10,13 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -35,25 +37,54 @@ type cgoStore struct {
 	cache    *writeCache
 	writer   *lanceWriter // native lancedb-go for CUD ops
 	logBuf   *logBuffer   // buffered log writes via native SDK
+
+	// Offline cache (nil when offline mode is disabled OR log fallback DuckDB failed)
+	offCache    *offlineCache
+	offCtx      context.Context
+	offCancel   context.CancelFunc
+
+	// Infrastructure event ring buffer (storage_events)
+	infraRing  *infraRing
+	logDrainCh chan struct{} // signals the drain goroutine when Lance flush succeeds
 }
 
 // Open connects to DuckDB and loads the Lance extension.
 // A local server.duckdb file is created in the data directory if it
 // doesn't exist; delete it to force a clean rebuild on next startup.
-func Open(dataPath string) (Store, error) {
+// If duckdbPath is non-empty, the DuckDB database file is placed there
+// instead of inside the data directory (useful when data is on NFS/S3
+// but DuckDB needs a local filesystem for reliable file locking).
+func Open(dataPath string, duckdbPath ...string) (Store, error) {
 	// For cloud URIs, DuckDB's cache file goes next to the executable;
 	// for local paths, ensure the data directory exists.
 	var dbPath string
-	if isCloudURI(dataPath) {
+	if len(duckdbPath) > 0 && duckdbPath[0] != "" {
+		// Explicit duckdb_path from config -- use it
+		if err := os.MkdirAll(duckdbPath[0], 0o755); err != nil {
+			return nil, fmt.Errorf("create duckdb dir: %w", err)
+		}
+		dbPath = filepath.Join(duckdbPath[0], "server.duckdb")
+	} else if isCloudURI(dataPath) {
 		exeDir, _ := os.Executable()
 		dbPath = filepath.Join(filepath.Dir(exeDir), "server.duckdb")
 	} else {
+		dbPath = filepath.Join(dataPath, "server.duckdb")
+	}
+
+	// Ensure data directory exists for local paths
+	if !isCloudURI(dataPath) {
 		if err := os.MkdirAll(dataPath, 0o755); err != nil {
 			return nil, fmt.Errorf("create data dir: %w", err)
 		}
-		dbPath = filepath.Join(dataPath, "server.duckdb")
 	}
 	log.Printf("DuckDB database: %s", dbPath)
+
+	// Warn if DuckDB database is not on a local filesystem
+	if isLocal, desc, err := CheckLocalFS(filepath.Dir(dbPath)); err == nil && !isLocal {
+		log.Printf("WARNING: DuckDB database path %q is on %s.", dbPath, desc)
+		log.Printf("WARNING: DuckDB requires a local filesystem for reliable file locking.")
+		log.Printf("WARNING: Set [storage] duckdb_path in config.toml to a local directory.")
+	}
 
 	conn, err := sql.Open("duckdb", dbPath)
 	if err != nil {
@@ -90,11 +121,31 @@ func Open(dataPath string) (Store, error) {
 	})
 	s.cache.logFn = func(entry LogEntry) { s.WriteLog(entry) }
 
-	// Set up buffered log writer - batches log entries and flushes
-	// via the native lancedb-go SDK (no DuckDB for log inserts).
+	// Set up buffered log writer with 3-tier fallback:
+	//   Tier 1: Lance (via native lancedb-go SDK)
+	//   Tier 2: DuckDB cached_logs (via offline_cache.db)
+	//   Tier 3: Memory buffer (capped, entries prepended back by logBuffer)
+	s.infraRing = newInfraRing(100)
+	s.logDrainCh = make(chan struct{}, 1)
+
 	s.logBuf = newLogBuffer(loadLogBufferConfig(settings), func(entries []LogEntry) error {
-		return s.writer.InsertLogs(entries)
+		return s.flushLogs3Tier(entries)
 	})
+
+	// Always open DuckDB offline_cache.db for log fallback, regardless of
+	// offline_enabled setting. Full offline mode (snapshots, health probe)
+	// only starts when offline_enabled=true.
+	if err := s.initLogFallback(settings); err != nil {
+		log.Printf("log fallback DuckDB init error (logs will only buffer in memory): %v", err)
+	}
+
+	// Initialize full offline mode if enabled (snapshots, probe, replay)
+	if err := s.initOffline(settings); err != nil {
+		log.Printf("offline cache init error (continuing without offline): %v", err)
+	}
+
+	// Start log drain goroutine to move cached_logs -> Lance when possible
+	go s.runLogDrain()
 
 	return s, nil
 }
@@ -126,11 +177,17 @@ func (s *cgoStore) bootstrap() error {
 }
 
 func (s *cgoStore) Close() error {
+	if s.offCancel != nil {
+		s.offCancel()
+	}
 	if s.logBuf != nil {
 		s.logBuf.close()
 	}
 	if s.cache != nil {
 		s.cache.close()
+	}
+	if s.offCache != nil {
+		s.offCache.close()
 	}
 	if s.writer != nil {
 		s.writer.close()
@@ -143,6 +200,279 @@ func (s *cgoStore) CacheStats() (pendingReads, pendingStars int) {
 		return s.cache.Stats()
 	}
 	return 0, 0
+}
+
+func (s *cgoStore) DuckDBProcessInfo() *DuckDBProcessInfo {
+	return nil
+}
+
+func (s *cgoStore) OfflineStatus() *OfflineStatus {
+	if s.offCache == nil {
+		return nil
+	}
+	st := s.offCache.status()
+	return &st
+}
+
+// isOffline returns true when offline mode is enabled and Lance is unreachable.
+func (s *cgoStore) isOffline() bool {
+	return s.offCache != nil && s.offCache.isOffline.Load()
+}
+
+// goOffline switches to offline mode if not already offline.
+func (s *cgoStore) goOffline(reason error) {
+	if s.offCache == nil {
+		return
+	}
+	if s.offCache.isOffline.CompareAndSwap(false, true) {
+		log.Printf("Switched to offline mode: %v", reason)
+		s.offCache.emitLog("warn", "Switched to offline mode: "+reason.Error())
+	}
+}
+
+// initLogFallback opens the DuckDB offline_cache.db unconditionally for log
+// fallback storage. The cached_logs table is created here. Full offline mode
+// (snapshots, health probe, replay) is handled separately in initOffline.
+func (s *cgoStore) initLogFallback(settings map[string]string) error {
+	cfg := loadOfflineConfig(settings)
+
+	oc, err := newOfflineCache(cfg)
+	if err != nil {
+		return err
+	}
+	oc.logFn = func(entry LogEntry) { s.WriteLog(entry) }
+	s.offCache = oc
+	log.Printf("Log fallback DuckDB opened: %s", cfg.CachePath)
+	return nil
+}
+
+// initOffline reads offline settings and starts the cache + goroutines.
+// If offCache is already open (from initLogFallback), it reuses the connection.
+func (s *cgoStore) initOffline(settings map[string]string) error {
+	cfg := loadOfflineConfig(settings)
+	if !cfg.Enabled {
+		return nil
+	}
+
+	// offCache was already opened by initLogFallback; just start goroutines.
+	if s.offCache == nil {
+		oc, err := newOfflineCache(cfg)
+		if err != nil {
+			return err
+		}
+		oc.logFn = func(entry LogEntry) { s.WriteLog(entry) }
+		s.offCache = oc
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.offCtx = ctx
+	s.offCancel = cancel
+
+	// Run initial snapshot immediately
+	go func() {
+		if err := s.offCache.Snapshot(s); err != nil {
+			log.Printf("initial offline snapshot error: %v", err)
+		}
+	}()
+
+	go s.runSnapshotLoop(ctx, cfg.SnapshotIntervalMins)
+	go s.runHealthProbe(ctx)
+
+	log.Printf("Offline mode enabled (snapshot every %d min, cache %d days of articles)",
+		cfg.SnapshotIntervalMins, cfg.ArticleDays)
+	return nil
+}
+
+// runSnapshotLoop periodically snapshots Lance data into the offline cache.
+func (s *cgoStore) runSnapshotLoop(ctx context.Context, intervalMins int) {
+	if intervalMins <= 0 {
+		intervalMins = 10
+	}
+	ticker := time.NewTicker(time.Duration(intervalMins) * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if s.isOffline() {
+				continue // don't snapshot while offline
+			}
+			if err := s.offCache.Snapshot(s); err != nil {
+				log.Printf("offline snapshot error: %v", err)
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// runHealthProbe periodically checks if Lance is reachable.
+func (s *cgoStore) runHealthProbe(ctx context.Context) {
+	for {
+		interval := 30 * time.Second
+		if s.isOffline() {
+			interval = 5 * time.Second
+		}
+
+		select {
+		case <-time.After(interval):
+			alive := s.probeLance()
+			if alive && s.isOffline() {
+				s.handleReconnect()
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// probeLance runs a lightweight query to check if Lance is reachable.
+func (s *cgoStore) probeLance() bool {
+	row := s.conn.QueryRow("SELECT 1 FROM " + s.lanceTable("feeds") + " LIMIT 1")
+	var dummy int
+	return row.Scan(&dummy) == nil
+}
+
+// handleReconnect replays pending changes and switches back to online mode.
+func (s *cgoStore) handleReconnect() {
+	if s.offCache == nil {
+		return
+	}
+
+	count, err := s.offCache.Replay(s.writer)
+	if err != nil {
+		log.Printf("offline replay error (staying offline): %v", err)
+		return
+	}
+
+	// Also drain any cached logs accumulated during the outage
+	s.drainCachedLogs(500)
+
+	s.offCache.isOffline.Store(false)
+	log.Printf("Back online: %d changes replayed", count)
+	s.offCache.emitLog("info", fmt.Sprintf("Back online: %d changes replayed", count))
+
+	// Trigger a fresh snapshot now that we're back
+	go func() {
+		if err := s.offCache.Snapshot(s); err != nil {
+			log.Printf("post-reconnect snapshot error: %v", err)
+		}
+	}()
+}
+
+// flushLogs3Tier implements the 3-tier log write path:
+//   Tier 1: Lance (native SDK) -- primary storage
+//   Tier 2: DuckDB cached_logs -- survives restart, drained when Lance returns
+//   Tier 3: Memory (logBuffer prepend) -- last resort, capped
+func (s *cgoStore) flushLogs3Tier(entries []LogEntry) error {
+	// Tier 1: Try Lance
+	err := s.writer.InsertLogs(entries)
+	if err == nil {
+		// Lance succeeded -- signal drain goroutine to move any DuckDB backlog
+		select {
+		case s.logDrainCh <- struct{}{}:
+		default:
+		}
+
+		// Drain infra events now that we can write
+		if s.infraRing.pending() > 0 {
+			infraEntries := s.infraRing.drain()
+			if len(infraEntries) > 0 {
+				if err2 := s.writer.InsertLogs(infraEntries); err2 != nil {
+					debug.Log(debug.Batch, "infra event drain error: %v", err2)
+				}
+			}
+		}
+		return nil
+	}
+
+	// Lance failed -- record infrastructure event
+	s.infraRing.add("error", fmt.Sprintf("Lance log write failed: %v", err))
+	log.Printf("log flush to Lance failed (%d entries), trying DuckDB fallback: %v", len(entries), err)
+
+	// Tier 2: Try DuckDB cached_logs
+	if s.offCache != nil {
+		err2 := s.offCache.insertLogs(entries)
+		if err2 == nil {
+			s.infraRing.add("warn", fmt.Sprintf("Logs diverted to DuckDB (%d entries)", len(entries)))
+			debug.Log(debug.Batch, "log flush to DuckDB OK: %d entries", len(entries))
+			return nil
+		}
+		s.infraRing.add("error", fmt.Sprintf("DuckDB log write also failed: %v", err2))
+		log.Printf("log flush to DuckDB also failed (%d entries): %v", len(entries), err2)
+	}
+
+	// Tier 3: Return error so logBuffer prepends entries back to memory
+	return err
+}
+
+// runLogDrain periodically moves log entries from DuckDB cached_logs to Lance.
+func (s *cgoStore) runLogDrain() {
+	const drainBatch = 500
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.drainCachedLogs(drainBatch)
+		case <-s.logDrainCh:
+			s.drainCachedLogs(drainBatch)
+		}
+	}
+}
+
+// drainCachedLogs reads a batch from DuckDB cached_logs and writes to Lance.
+func (s *cgoStore) drainCachedLogs(batchSize int) {
+	if s.offCache == nil {
+		return
+	}
+
+	pending := s.offCache.pendingLogCount()
+	if pending == 0 {
+		return
+	}
+
+	entries, err := s.offCache.drainLogs(batchSize)
+	if err != nil {
+		debug.Log(debug.Batch, "log drain read error: %v", err)
+		return
+	}
+	if len(entries) == 0 {
+		return
+	}
+
+	if err := s.writer.InsertLogs(entries); err != nil {
+		debug.Log(debug.Batch, "log drain to Lance failed (%d entries): %v", len(entries), err)
+		return
+	}
+
+	ids := make([]string, len(entries))
+	for i, e := range entries {
+		ids[i] = e.LogID
+	}
+	if err := s.offCache.deleteLogs(ids); err != nil {
+		debug.Log(debug.Batch, "log drain delete error: %v", err)
+		return
+	}
+
+	s.infraRing.add("info", fmt.Sprintf("Drained %d log entries from DuckDB to Lance", len(entries)))
+	log.Printf("Log drain: moved %d entries from DuckDB to Lance (%d remaining)", len(entries), pending-len(entries))
+}
+
+// LogBufferStats returns the current state of the 3-tier log write path.
+func (s *cgoStore) LogBufferStats() LogBufferStatus {
+	st := LogBufferStatus{}
+	if s.logBuf != nil {
+		st.MemoryEntries = s.logBuf.pending()
+	}
+	if s.offCache != nil {
+		st.DuckDBEntries = s.offCache.pendingLogCount()
+	}
+	if s.infraRing != nil {
+		st.InfraEvents = s.infraRing.pending()
+	}
+	return st
 }
 
 // lanceTable returns the DuckDB namespace reference for a lance table,
@@ -166,6 +496,9 @@ func (s *cgoStore) lanceExec(sqlStmt string) error {
 // ── Feed queries ──────────────────────────────────────────────────────────────
 
 func (s *cgoStore) GetFeeds() ([]Feed, error) {
+	if s.isOffline() {
+		return s.offCache.getFeeds()
+	}
 	feedTbl := s.lanceTable("feeds")
 	artTbl := s.lanceTable("articles")
 
@@ -199,6 +532,10 @@ func (s *cgoStore) GetFeeds() ([]Feed, error) {
 
 	rows, err := s.conn.Query(q)
 	if err != nil {
+		if s.offCache != nil {
+			s.goOffline(err)
+			return s.offCache.getFeeds()
+		}
 		return nil, err
 	}
 	defer rows.Close()
@@ -222,6 +559,9 @@ func (s *cgoStore) GetFeeds() ([]Feed, error) {
 }
 
 func (s *cgoStore) GetFeed(feedID string) (*Feed, error) {
+	if s.isOffline() {
+		return nil, nil
+	}
 	tbl := s.lanceTable("feeds")
 	q := fmt.Sprintf(`
 		SELECT feed_id, title, url, site_url, icon_url,
@@ -245,6 +585,12 @@ func (s *cgoStore) GetFeed(feedID string) (*Feed, error) {
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
+	}
+	if err != nil {
+		if s.offCache != nil {
+			s.goOffline(err)
+			return nil, nil
+		}
 	}
 	return &f, err
 }
@@ -276,6 +622,9 @@ func (s *cgoStore) GetPendingFeeds() ([]string, error) {
 // ── Article queries ───────────────────────────────────────────────────────────
 
 func (s *cgoStore) GetArticles(feedID string, limit, offset int, unreadOnly bool, sortAsc bool) ([]Article, error) {
+	if s.isOffline() {
+		return s.offCache.getArticles(feedID, limit, offset, unreadOnly, sortAsc)
+	}
 	artTbl := s.lanceTable("articles")
 
 	cte, hasCTE := s.cache.pendingCTE()
@@ -319,6 +668,10 @@ func (s *cgoStore) GetArticles(feedID string, limit, offset int, unreadOnly bool
 
 	rows, err := s.conn.Query(q)
 	if err != nil {
+		if s.offCache != nil {
+			s.goOffline(err)
+			return s.offCache.getArticles(feedID, limit, offset, unreadOnly, sortAsc)
+		}
 		return nil, err
 	}
 	defer rows.Close()
@@ -339,6 +692,9 @@ func (s *cgoStore) GetArticles(feedID string, limit, offset int, unreadOnly bool
 }
 
 func (s *cgoStore) GetArticle(articleID string) (*Article, error) {
+	if s.isOffline() {
+		return s.offCache.getArticle(articleID)
+	}
 	artTbl := s.lanceTable("articles")
 
 	cte, hasCTE := s.cache.pendingCTE()
@@ -372,12 +728,21 @@ func (s *cgoStore) GetArticle(articleID string) (*Article, error) {
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
+	if err != nil {
+		if s.offCache != nil {
+			s.goOffline(err)
+			return s.offCache.getArticle(articleID)
+		}
+	}
 	return &a, err
 }
 
 func (s *cgoStore) GetArticleBatch(articleIDs []string) ([]Article, error) {
 	if len(articleIDs) == 0 {
 		return nil, nil
+	}
+	if s.isOffline() {
+		return s.offCache.getArticleBatch(articleIDs)
 	}
 	artTbl := s.lanceTable("articles")
 
@@ -410,6 +775,10 @@ func (s *cgoStore) GetArticleBatch(articleIDs []string) ([]Article, error) {
 
 	rows, err := s.conn.Query(q)
 	if err != nil {
+		if s.offCache != nil {
+			s.goOffline(err)
+			return s.offCache.getArticleBatch(articleIDs)
+		}
 		return nil, err
 	}
 	defer rows.Close()
@@ -430,18 +799,39 @@ func (s *cgoStore) GetArticleBatch(articleIDs []string) ([]Article, error) {
 }
 
 func (s *cgoStore) SetArticleRead(articleID string, isRead bool) error {
-	// Record in cache - reads will overlay this via CTE JOIN.
-	// Periodic flush will UPDATE into Lance.
 	s.cache.setRead(articleID, isRead)
+	if s.isOffline() {
+		action := "read"
+		if !isRead {
+			action = "unread"
+		}
+		s.offCache.addPendingChange(articleID, action, "")
+		v := isRead
+		s.offCache.updateCachedArticle(articleID, &v, nil)
+	}
 	return nil
 }
 
 func (s *cgoStore) SetArticleStarred(articleID string, isStarred bool) error {
 	s.cache.setStarred(articleID, isStarred)
+	if s.isOffline() {
+		action := "star"
+		if !isStarred {
+			action = "unstar"
+		}
+		s.offCache.addPendingChange(articleID, action, "")
+		v := isStarred
+		s.offCache.updateCachedArticle(articleID, nil, &v)
+	}
 	return nil
 }
 
 func (s *cgoStore) MarkAllRead(feedID string) error {
+	if s.isOffline() {
+		s.offCache.addPendingChange(feedID, "mark_all_read", "")
+		s.offCache.markAllReadCached(feedID)
+		return nil
+	}
 	// Flush any pending cached writes first so the native UPDATE sees clean state
 	if err := s.cache.flush(); err != nil {
 		return err
@@ -452,6 +842,9 @@ func (s *cgoStore) MarkAllRead(feedID string) error {
 // ── Category queries ──────────────────────────────────────────────────────────
 
 func (s *cgoStore) GetCategories() ([]Category, error) {
+	if s.isOffline() {
+		return s.offCache.getCategories()
+	}
 	tbl := s.lanceTable("categories")
 	q := fmt.Sprintf(`
 		SELECT category_id, name, parent_id, sort_order, created_at, updated_at
@@ -461,6 +854,10 @@ func (s *cgoStore) GetCategories() ([]Category, error) {
 
 	rows, err := s.conn.Query(q)
 	if err != nil {
+		if s.offCache != nil {
+			s.goOffline(err)
+			return s.offCache.getCategories()
+		}
 		return nil, err
 	}
 	defer rows.Close()
@@ -479,11 +876,18 @@ func (s *cgoStore) GetCategories() ([]Category, error) {
 // ── Settings queries ──────────────────────────────────────────────────────────
 
 func (s *cgoStore) GetSettings() (map[string]string, error) {
+	if s.isOffline() {
+		return s.offCache.getSettings(), nil
+	}
 	tbl := s.lanceTable("settings")
 	q := fmt.Sprintf(`SELECT key, value FROM %s ORDER BY key`, tbl)
 
 	rows, err := s.conn.Query(q)
 	if err != nil {
+		if s.offCache != nil {
+			s.goOffline(err)
+			return s.offCache.getSettings(), nil
+		}
 		return nil, err
 	}
 	defer rows.Close()
@@ -500,6 +904,10 @@ func (s *cgoStore) GetSettings() (map[string]string, error) {
 }
 
 func (s *cgoStore) GetSetting(key string) (string, bool, error) {
+	if s.isOffline() {
+		v, ok := s.offCache.getSetting(key)
+		return v, ok, nil
+	}
 	tbl := s.lanceTable("settings")
 	q := fmt.Sprintf(`SELECT value FROM %s WHERE key = '%s' LIMIT 1`, tbl, escapeSQ(key))
 
@@ -510,12 +918,22 @@ func (s *cgoStore) GetSetting(key string) (string, bool, error) {
 		return "", false, nil
 	}
 	if err != nil {
+		if s.offCache != nil {
+			s.goOffline(err)
+			val, ok := s.offCache.getSetting(key)
+			return val, ok, nil
+		}
 		return "", false, err
 	}
 	return v, true, nil
 }
 
 func (s *cgoStore) PutSetting(key, value string) error {
+	if s.isOffline() {
+		s.offCache.updateCachedSetting(key, value)
+		s.offCache.addPendingSettingChange(key, value)
+		return nil
+	}
 	// Check if key exists; if not, INSERT instead of UPDATE
 	_, found, err := s.GetSetting(key)
 	if err != nil {
@@ -528,6 +946,13 @@ func (s *cgoStore) PutSetting(key, value string) error {
 }
 
 func (s *cgoStore) PutSettings(settings map[string]string) error {
+	if s.isOffline() {
+		for k, v := range settings {
+			s.offCache.updateCachedSetting(k, v)
+			s.offCache.addPendingSettingChange(k, v)
+		}
+		return nil
+	}
 	// Get all existing keys in one query
 	existing, err := s.GetSettings()
 	if err != nil {
@@ -726,50 +1151,117 @@ func (s *cgoStore) GetLogs(opts LogQuery) ([]LogEntry, int, error) {
 		}
 	}
 
-	if len(sources) == 0 {
+	// Query cached_logs from DuckDB offline cache (fallback entries not yet drained)
+	var cachedEntries []LogEntry
+	if s.offCache != nil && (opts.Service == "" || opts.Service == "api") {
+		if cl, err := s.offCache.queryCachedLogs(opts.Level, opts.Category); err == nil {
+			cachedEntries = cl
+		}
+	}
+
+	if len(sources) == 0 && len(cachedEntries) == 0 {
 		return nil, 0, nil
 	}
 
-	unionSQL := strings.Join(sources, " UNION ALL ")
+	// If we have both Lance sources and cached entries, query Lance then merge
+	var lanceEntries []LogEntry
+	lanceTotal := 0
+	if len(sources) > 0 {
+		unionSQL := strings.Join(sources, " UNION ALL ")
 
-	var conditions []string
-	if opts.Level != "" {
-		conditions = append(conditions, fmt.Sprintf("level = '%s'", escapeSQ(opts.Level)))
-	}
-	if opts.Category != "" {
-		conditions = append(conditions, fmt.Sprintf("category = '%s'", escapeSQ(opts.Category)))
-	}
-	where := ""
-	if len(conditions) > 0 {
-		where = " WHERE " + strings.Join(conditions, " AND ")
-	}
+		var conditions []string
+		if opts.Level != "" {
+			conditions = append(conditions, fmt.Sprintf("level = '%s'", escapeSQ(opts.Level)))
+		}
+		if opts.Category != "" {
+			conditions = append(conditions, fmt.Sprintf("category = '%s'", escapeSQ(opts.Category)))
+		}
+		if opts.StartTime != nil {
+			conditions = append(conditions, fmt.Sprintf("timestamp >= '%s'", opts.StartTime.UTC().Format("2006-01-02T15:04:05Z")))
+		}
+		if opts.EndTime != nil {
+			conditions = append(conditions, fmt.Sprintf("timestamp <= '%s'", opts.EndTime.UTC().Format("2006-01-02T15:04:05Z")))
+		}
+		where := ""
+		if len(conditions) > 0 {
+			where = " WHERE " + strings.Join(conditions, " AND ")
+		}
 
-	// Total count
-	countQ := fmt.Sprintf(`SELECT COUNT(*) AS cnt FROM (%s) AS logs%s`, unionSQL, where)
-	var total int
-	if err := s.conn.QueryRow(countQ).Scan(&total); err != nil {
-		total = 0
-	}
+		// Total count from Lance
+		countQ := fmt.Sprintf(`SELECT COUNT(*) AS cnt FROM (%s) AS logs%s`, unionSQL, where)
+		if err := s.conn.QueryRow(countQ).Scan(&lanceTotal); err != nil {
+			lanceTotal = 0
+		}
 
-	// Paginated results
-	q := fmt.Sprintf(`SELECT * FROM (%s) AS logs%s ORDER BY timestamp DESC LIMIT %d OFFSET %d`,
-		unionSQL, where, opts.Limit, opts.Offset)
+		if len(cachedEntries) == 0 {
+			// Fast path: no cached entries, query Lance directly with pagination
+			q := fmt.Sprintf(`SELECT * FROM (%s) AS logs%s ORDER BY timestamp DESC LIMIT %d OFFSET %d`,
+				unionSQL, where, opts.Limit, opts.Offset)
 
-	rows, err := s.conn.Query(q)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
+			rows, err := s.conn.Query(q)
+			if err != nil {
+				return nil, 0, err
+			}
+			defer rows.Close()
 
-	var entries []LogEntry
-	for rows.Next() {
-		var e LogEntry
-		if err := rows.Scan(&e.LogID, &e.Timestamp, &e.Level, &e.Category, &e.Service, &e.Message, &e.Details, &e.CreatedAt); err != nil {
+			var entries []LogEntry
+			for rows.Next() {
+				var e LogEntry
+				if err := rows.Scan(&e.LogID, &e.Timestamp, &e.Level, &e.Category, &e.Service, &e.Message, &e.Details, &e.CreatedAt); err != nil {
+					return nil, 0, err
+				}
+				entries = append(entries, e)
+			}
+			return entries, lanceTotal, rows.Err()
+		}
+
+		// Slow path: need to merge with cached entries
+		fetchLimit := opts.Offset + opts.Limit
+		q := fmt.Sprintf(`SELECT * FROM (%s) AS logs%s ORDER BY timestamp DESC LIMIT %d`,
+			unionSQL, where, fetchLimit)
+
+		rows, err := s.conn.Query(q)
+		if err != nil {
 			return nil, 0, err
 		}
-		entries = append(entries, e)
+		defer rows.Close()
+
+		for rows.Next() {
+			var e LogEntry
+			if err := rows.Scan(&e.LogID, &e.Timestamp, &e.Level, &e.Category, &e.Service, &e.Message, &e.Details, &e.CreatedAt); err != nil {
+				return nil, 0, err
+			}
+			lanceEntries = append(lanceEntries, e)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, 0, err
+		}
 	}
-	return entries, total, rows.Err()
+
+	// Merge lance + cached entries, sort by timestamp DESC, apply pagination
+	total := lanceTotal + len(cachedEntries)
+	merged := make([]LogEntry, 0, len(lanceEntries)+len(cachedEntries))
+	merged = append(merged, lanceEntries...)
+	merged = append(merged, cachedEntries...)
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].Timestamp == nil {
+			return false
+		}
+		if merged[j].Timestamp == nil {
+			return true
+		}
+		return merged[i].Timestamp.After(*merged[j].Timestamp)
+	})
+
+	// Apply offset and limit
+	if opts.Offset >= len(merged) {
+		return nil, total, nil
+	}
+	end := opts.Offset + opts.Limit
+	if end > len(merged) {
+		end = len(merged)
+	}
+	return merged[opts.Offset:end], total, nil
 }
 
 func (s *cgoStore) TrimLogs(maxEntries int) error {

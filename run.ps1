@@ -143,7 +143,7 @@ function Cmd-DataFix {
 function Cmd-Benchmark {
     Ensure-Venv
     Write-Host "Running benchmark ..." -ForegroundColor Cyan
-    python "$ProjectRoot\benchmark.py" @ExtraArgs
+    python "$ProjectRoot\tests\benchmark.py" @ExtraArgs
 }
 
 function Cmd-Help {

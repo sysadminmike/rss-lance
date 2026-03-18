@@ -22,6 +22,7 @@ import (
 type LogBufferConfig struct {
 	FlushThreshold    int // flush after N buffered entries (default 20)
 	FlushIntervalSecs int // flush after N seconds even if threshold not reached (default 30)
+	MemoryCap         int // max entries held in memory before dropping oldest (default 100000)
 }
 
 // DefaultLogBufferConfig returns sensible defaults.
@@ -29,6 +30,7 @@ func DefaultLogBufferConfig() LogBufferConfig {
 	return LogBufferConfig{
 		FlushThreshold:    20,
 		FlushIntervalSecs: 30,
+		MemoryCap:         100000,
 	}
 }
 
@@ -48,6 +50,9 @@ func newLogBuffer(cfg LogBufferConfig, flushFn func([]LogEntry) error) *logBuffe
 	}
 	if cfg.FlushIntervalSecs <= 0 {
 		cfg.FlushIntervalSecs = 30
+	}
+	if cfg.MemoryCap <= 0 {
+		cfg.MemoryCap = 100000
 	}
 	return &logBuffer{
 		entries: make([]LogEntry, 0, cfg.FlushThreshold),
@@ -116,6 +121,16 @@ func (lb *logBuffer) flush() error {
 		// Put failed entries back (prepend so ordering is preserved)
 		lb.mu.Lock()
 		lb.entries = append(batch, lb.entries...)
+
+		// Enforce memory cap: drop oldest entries if over limit
+		if lb.cfg.MemoryCap > 0 && len(lb.entries) > lb.cfg.MemoryCap {
+			dropped := len(lb.entries) - lb.cfg.MemoryCap
+			lb.entries = lb.entries[dropped:]
+			log.Printf("WARNING: log buffer memory cap (%d) exceeded, dropped %d oldest entries",
+				lb.cfg.MemoryCap, dropped)
+			debug.Log(debug.Batch, "log memory cap: dropped %d entries", dropped)
+		}
+
 		lb.mu.Unlock()
 	} else {
 		debug.Log(debug.Batch, "log flush OK: %d entries", count)
