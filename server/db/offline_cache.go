@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -66,6 +68,13 @@ type offlineCache struct {
 // newOfflineCache opens (or creates) the DuckDB cache file and
 // ensures all required tables exist.
 func newOfflineCache(cfg OfflineConfig) (*offlineCache, error) {
+	// Ensure the parent directory exists so DuckDB can create the file.
+	if dir := filepath.Dir(cfg.CachePath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create offline cache dir %s: %w", dir, err)
+		}
+	}
+
 	conn, err := sql.Open("duckdb", cfg.CachePath)
 	if err != nil {
 		return nil, fmt.Errorf("open offline cache %s: %w", cfg.CachePath, err)

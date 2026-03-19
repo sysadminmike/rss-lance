@@ -926,6 +926,9 @@ func (s *cliStore) GetArticleBatch(articleIDs []string) ([]Article, error) {
 func (s *cliStore) SetArticleRead(articleID string, isRead bool) error {
 	// Record in cache - reads will overlay this via CTE JOIN.
 	s.cache.setRead(articleID, isRead)
+	if s.offCache == nil {
+		return nil
+	}
 	// Buffer in DuckDB pending_changes; background flush writes to Lance.
 	action := "read"
 	if !isRead {
@@ -940,6 +943,9 @@ func (s *cliStore) SetArticleRead(articleID string, isRead bool) error {
 
 func (s *cliStore) SetArticleStarred(articleID string, isStarred bool) error {
 	s.cache.setStarred(articleID, isStarred)
+	if s.offCache == nil {
+		return nil
+	}
 	// Buffer in DuckDB pending_changes; background flush writes to Lance.
 	action := "star"
 	if !isStarred {
@@ -953,6 +959,21 @@ func (s *cliStore) SetArticleStarred(articleID string, isStarred bool) error {
 }
 
 func (s *cliStore) MarkAllRead(feedID string) error {
+	// Update in-memory cache for all unread articles in this feed so reads
+	// see the change immediately via the CTE overlay.
+	artTbl := s.lanceTable("articles")
+	q := fmt.Sprintf(`SELECT article_id FROM %s WHERE feed_id = '%s' AND is_read = false`,
+		artTbl, escapeSQ(feedID))
+	rows, err := s.lanceQuery(q)
+	if err == nil {
+		for _, r := range rows {
+			s.cache.setRead(rowStr(r, "article_id"), true)
+		}
+	}
+
+	if s.offCache == nil {
+		return nil
+	}
 	debug.Log(debug.Lance, "buffered write: mark_all_read feed %s", feedID)
 	s.offCache.addPendingChange(feedID, "mark_all_read", "")
 	s.offCache.markAllReadCached(feedID)
@@ -1061,6 +1082,12 @@ func (s *cliStore) GetSettings() (map[string]string, error) {
 	for _, r := range rows {
 		settings[rowStr(r, "key")] = rowStr(r, "value")
 	}
+	// Overlay any pending settings changes so writes are visible immediately.
+	if s.offCache != nil {
+		for k, v := range s.offCache.getSettings() {
+			settings[k] = v
+		}
+	}
 	return settings, nil
 }
 
@@ -1068,6 +1095,12 @@ func (s *cliStore) GetSetting(key string) (string, bool, error) {
 	if s.isOffline() {
 		v, ok := s.offCache.getSetting(key)
 		return v, ok, nil
+	}
+	// Check for pending settings changes first (fast, in-memory).
+	if s.offCache != nil {
+		if v, ok := s.offCache.getSetting(key); ok {
+			return v, true, nil
+		}
 	}
 	tbl := s.lanceTable("settings")
 	q := fmt.Sprintf(`SELECT value FROM %s WHERE key = '%s' LIMIT 1`, tbl, escapeSQ(key))
@@ -1088,6 +1121,9 @@ func (s *cliStore) GetSetting(key string) (string, bool, error) {
 }
 
 func (s *cliStore) PutSetting(key, value string) error {
+	if s.offCache == nil {
+		return nil
+	}
 	debug.Log(debug.Lance, "buffered write: setting %s = %q", key, value)
 	s.offCache.updateCachedSetting(key, value)
 	s.offCache.addPendingSettingChange(key, value)
@@ -1095,6 +1131,9 @@ func (s *cliStore) PutSetting(key, value string) error {
 }
 
 func (s *cliStore) PutSettings(settings map[string]string) error {
+	if s.offCache == nil {
+		return nil
+	}
 	debug.Log(debug.Lance, "buffered write: %d settings batch", len(settings))
 	for k, v := range settings {
 		s.offCache.updateCachedSetting(k, v)
