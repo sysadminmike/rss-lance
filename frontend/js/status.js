@@ -84,7 +84,7 @@ function renderStatusPage(container, data) {
   container.innerHTML = `
     <div class="status-inner">
       <h1 class="status-title">Database Status</h1>
-      <p class="status-subtitle">${data.data_path}</p>
+      <p class="status-subtitle">${_escapeHTML(data.data_path)}</p>
 
       <div class="status-cards">
         ${renderStatCard('Total Records', data.tables.reduce((s, t) => s + t.row_count, 0).toLocaleString(), '📊')}
@@ -143,7 +143,7 @@ function renderStatusPage(container, data) {
           <tbody>
             ${data.tables.map(t => `
               <tr>
-                <td><code>${t.name}</code></td>
+                <td><code>${_escapeHTML(t.name)}</code></td>
                 <td class="num">${t.row_count.toLocaleString()}</td>
                 <td class="num">${formatBytes(t.size_bytes)}</td>
                 <td class="num">${t.version || '—'}</td>
@@ -164,6 +164,12 @@ function renderStatusPage(container, data) {
       ${renderSchemaDetails(data.tables)}
     </div>
   `;
+}
+
+function _escapeHTML(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
 }
 
 function renderStatCard(label, value, icon) {

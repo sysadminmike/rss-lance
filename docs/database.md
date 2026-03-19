@@ -406,3 +406,28 @@ Browser → POST /api/feeds → Go server inserts into pending_feeds
                                           ↓
                               Deletes the pending_feeds row
 ```
+
+## Query Escaping
+
+The Python fetcher builds LanceDB filter expressions dynamically (e.g. `feed_id = '<value>'`).
+To prevent filter injection, all values passed into these expressions are validated
+or escaped by `_escape_filter_value()` in `fetcher/db.py`:
+
+- Values matching the expected UUID/hex pattern (`^[a-fA-F0-9-]+$`) are passed through directly
+- All other values have single quotes escaped (`'` -> `''`) to prevent breaking out of string literals
+
+This applies to all `table.update()` and `table.delete()` filter strings in `db.py`, `main.py`,
+and `datafix.py`.
+
+The Go server uses parameterised DuckDB queries where possible and `escapeSQLString()` in
+`server/db/store.go` for SQL string literals.
+
+## GUID Collision Prevention
+
+Each article has a `guid` field used for deduplication. The fetcher derives it in
+`fetcher/feed_parser.py` using this priority:
+
+1. RSS `<guid>` or Atom `<id>` element (globally unique by spec)
+2. Article `<link>` URL (usually unique per feed)
+3. **Fallback hash:** `sha1(feed_id + title + published)` -- the `feed_id` is included as a
+   salt so articles from different feeds with the same title and date do not collide

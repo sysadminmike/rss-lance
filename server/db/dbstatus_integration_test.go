@@ -1,4 +1,4 @@
-//go:build windows
+//go:build (windows || duckdb_cli) && !lance_external
 
 package db
 

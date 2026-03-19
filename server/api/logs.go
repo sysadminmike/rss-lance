@@ -4,8 +4,10 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"rss-lance/server/db"
@@ -79,6 +81,7 @@ func (h *LogsHandler) Handle(w http.ResponseWriter, r *http.Request) {
 // structured log entries. It checks settings before writing.
 type ServerLogger struct {
 	store    db.Store
+	mu       sync.RWMutex
 	settings map[string]bool
 }
 
@@ -93,15 +96,20 @@ func (sl *ServerLogger) ReloadSettings() {
 	if err != nil {
 		return
 	}
-	sl.settings = make(map[string]bool)
+	newMap := make(map[string]bool)
 	for k, v := range settings {
 		if strings.HasPrefix(k, "log.api.") {
-			sl.settings[k] = (v == "true" || v == `"true"` || v == "1")
+			newMap[k] = (v == "true" || v == `"true"` || v == "1")
 		}
 	}
+	sl.mu.Lock()
+	sl.settings = newMap
+	sl.mu.Unlock()
 }
 
 func (sl *ServerLogger) shouldLog(category string) bool {
+	sl.mu.RLock()
+	defer sl.mu.RUnlock()
 	if enabled, ok := sl.settings["log.api.enabled"]; ok && !enabled {
 		return false
 	}
@@ -138,7 +146,9 @@ func (sl *ServerLogger) LogJSON(level, category, message string, data map[string
 
 func newUUID() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		log.Printf("ERROR: crypto/rand.Read failed: %v", err)
+	}
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",

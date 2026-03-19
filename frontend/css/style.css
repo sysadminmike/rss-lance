@@ -953,6 +953,20 @@ body.light-theme {
   text-transform: uppercase;
   letter-spacing: .4px;
 }
+.flush-btn {
+  margin-top: 12px;
+  padding: 6px 18px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13px;
+}
+.flush-btn:disabled {
+  opacity: .6;
+  cursor: default;
+}
 
 /* ── Settings page ────────────────────────────────────────────── */
 #settings-page {

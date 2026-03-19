@@ -33,6 +33,12 @@ param(
     [string]$Dir,
 
     [Parameter()]
+    [switch]$LanceEmbedded,
+
+    [Parameter()]
+    [switch]$LanceExternal,
+
+    [Parameter()]
     [switch]$NoTests
 )
 
@@ -227,6 +233,36 @@ function Build-Server {
     $buildTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     $ldflags = "-X main.BuildTime=$buildTime"
     if ($env:BUILD_VERSION) { $ldflags += " -X main.BuildVersion=$env:BUILD_VERSION" }
+
+    # Capture DuckDB CLI + Lance extension versions at build time
+    $duckBin = Join-Path $ToolsDir "duckdb.exe"
+    if (Test-Path $duckBin) {
+        try {
+            $verJson = & $duckBin -json -c "SELECT version() AS v" 2>$null | Out-String
+            $verObj = $verJson | ConvertFrom-Json
+            if ($verObj -and $verObj[0].v) {
+                $duckVer = $verObj[0].v
+                $ldflags += " -X main.BuildDuckDBVersion=$duckVer"
+                Write-Host "  DuckDB CLI version: $duckVer"
+            }
+        } catch {
+            Write-Host "  WARNING: Could not detect DuckDB version" -ForegroundColor Yellow
+        }
+        try {
+            $extJson = & $duckBin -json -c "INSTALL lance FROM community; LOAD lance; SELECT extension_version FROM duckdb_extensions() WHERE extension_name='lance' AND loaded=true" 2>$null | Out-String
+            $extObj = $extJson | ConvertFrom-Json
+            if ($extObj -and $extObj[0].extension_version) {
+                $lanceVer = $extObj[0].extension_version
+                $ldflags += " -X main.BuildLanceExtVersion=$lanceVer"
+                Write-Host "  Lance extension version: $lanceVer"
+            }
+        } catch {
+            Write-Host "  WARNING: Could not detect Lance extension version" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "  NOTE: tools\duckdb.exe not found, skipping build-time version capture" -ForegroundColor Yellow
+    }
+
     go build -ldflags "$ldflags" -o "$BuildDir\rss-lance-server.exe" .
 
     # Reset CGo env
@@ -255,6 +291,36 @@ function Build-ServerAll {
     $buildTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     $ldflags = "-X main.BuildTime=$buildTime"
     if ($env:BUILD_VERSION) { $ldflags += " -X main.BuildVersion=$env:BUILD_VERSION" }
+
+    # Capture DuckDB CLI + Lance extension versions at build time
+    $duckBin = Join-Path $ToolsDir "duckdb.exe"
+    if (Test-Path $duckBin) {
+        try {
+            $verJson = & $duckBin -json -c "SELECT version() AS v" 2>$null | Out-String
+            $verObj = $verJson | ConvertFrom-Json
+            if ($verObj -and $verObj[0].v) {
+                $duckVer = $verObj[0].v
+                $ldflags += " -X main.BuildDuckDBVersion=$duckVer"
+                Write-Host "  DuckDB CLI version: $duckVer"
+            }
+        } catch {
+            Write-Host "  WARNING: Could not detect DuckDB version" -ForegroundColor Yellow
+        }
+        try {
+            $extJson = & $duckBin -json -c "INSTALL lance FROM community; LOAD lance; SELECT extension_version FROM duckdb_extensions() WHERE extension_name='lance' AND loaded=true" 2>$null | Out-String
+            $extObj = $extJson | ConvertFrom-Json
+            if ($extObj -and $extObj[0].extension_version) {
+                $lanceVer = $extObj[0].extension_version
+                $ldflags += " -X main.BuildLanceExtVersion=$lanceVer"
+                Write-Host "  Lance extension version: $lanceVer"
+            }
+        } catch {
+            Write-Host "  WARNING: Could not detect Lance extension version" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "  NOTE: tools\duckdb.exe not found, skipping build-time version capture" -ForegroundColor Yellow
+    }
+
     go build -ldflags "$ldflags" -o "$BuildDir\$outName" .
 
     # Cross-compiled targets -- CGo disabled (need native libs per-platform in CI)

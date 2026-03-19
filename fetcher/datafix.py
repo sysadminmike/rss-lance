@@ -36,7 +36,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config import Config
-from db import DB, SCHEMA_VERSION, _utcnow
+from db import DB, SCHEMA_VERSION, _utcnow, _escape_filter_value
 
 logging.basicConfig(
     level=logging.INFO,
@@ -107,7 +107,7 @@ def run_fix(fix_name: str, db: DB, dry_run: bool = False,
              fix_name, description, version_label,
              " (DRY RUN)" if dry_run else "")
 
-    # Load all articles
+    # Load articles, get feed IDs, then process per-feed to limit memory usage
     df = db.articles.to_pandas()
     if df.empty:
         log.info("No articles in database.")
@@ -122,19 +122,25 @@ def run_fix(fix_name: str, db: DB, dry_run: bool = False,
             log.info("No articles with schema_version <= %d. Nothing to fix.", max_version)
             return
 
-    all_articles = df.to_dict("records")
-    log.info("Loaded %d articles across %d feeds",
-             len(all_articles), df["feed_id"].nunique())
-
-    # Group by feed_id
-    feeds: dict[str, list[dict]] = {}
-    for art in all_articles:
-        fid = art["feed_id"]
-        feeds.setdefault(fid, []).append(art)
+    feed_ids = df["feed_id"].unique().tolist()
+    total_articles = len(df)
+    log.info("Found %d articles across %d feeds to process",
+             total_articles, len(feed_ids))
+    del df  # free the full DataFrame before per-feed processing
 
     total_changed = 0
 
-    for feed_id, articles in feeds.items():
+    for feed_id in feed_ids:
+        # Load only this feed's articles from Lance (filtered at source)
+        feed_df = db.articles.to_pandas()
+        feed_df = feed_df[feed_df["feed_id"] == feed_id]
+        if not process_all and "schema_version" in feed_df.columns:
+            ver_col = feed_df["schema_version"].fillna(1).astype(int)
+            feed_df = feed_df[ver_col <= max_version]
+        if feed_df.empty:
+            continue
+        articles = feed_df.to_dict("records")
+        del feed_df  # free per-feed DataFrame
         # Snapshot originals for comparison
         originals = {a["article_id"]: (a.get("content", ""), a.get("summary", ""))
                      for a in articles}
@@ -155,7 +161,7 @@ def run_fix(fix_name: str, db: DB, dry_run: bool = False,
             if not dry_run and not process_all:
                 for art in articles:
                     db.articles.update(
-                        f"article_id = '{art['article_id']}'",
+                        f"article_id = '{_escape_filter_value(art['article_id'])}'",
                         {"schema_version": SCHEMA_VERSION, "updated_at": _utcnow()},
                     )
             continue
@@ -181,13 +187,13 @@ def run_fix(fix_name: str, db: DB, dry_run: bool = False,
                 updates["content"] = art["content"]
             if art.get("summary", "") != orig_summary:
                 updates["summary"] = art["summary"]
-            db.articles.update(f"article_id = '{aid}'", updates)
+            db.articles.update(f"article_id = '{_escape_filter_value(aid)}'", updates)
 
         # Stamp version on unchanged articles in this feed too
         if not process_all:
             unchanged_ids = set(a["article_id"] for a in articles) - set(a["article_id"] for a in changed)
             for aid in unchanged_ids:
-                db.articles.update(f"article_id = '{aid}'", {"schema_version": SCHEMA_VERSION, "updated_at": _utcnow()})
+                db.articles.update(f"article_id = '{_escape_filter_value(aid)}'", {"schema_version": SCHEMA_VERSION, "updated_at": _utcnow()})
 
     if dry_run:
         log.info("DRY RUN complete: %d articles would be modified", total_changed)

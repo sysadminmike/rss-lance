@@ -20,10 +20,12 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Build info variables — injected at compile time via -ldflags.
+// Build info variables -- injected at compile time via -ldflags.
 var (
-	BuildTime    string // e.g. "2026-03-18T14:30:00Z"
-	BuildVersion string // e.g. "v1.0.0" or "test-abc123"
+	BuildTime           string // e.g. "2026-03-18T14:30:00Z"
+	BuildVersion        string // e.g. "v1.0.0" or "test-abc123"
+	BuildDuckDBVersion  string // e.g. "v1.5.0" -- DuckDB CLI version at build time
+	BuildLanceExtVersion string // e.g. "0.0.4" -- Lance extension version at build time
 )
 
 // Config 
@@ -131,7 +133,7 @@ func main() {
 	logsHandler := api.NewLogsHandler(store)
 	tablesHandler := api.NewTablesHandler(store)
 	offlineStatusHandler := api.NewOfflineStatusHandler(store)
-	serverStatusHandler := api.NewServerStatusHandler(serverStartTime, BuildTime, BuildVersion, func() api.CacheStatsInfo {
+	serverStatusHandler := api.NewServerStatusHandler(serverStartTime, BuildTime, BuildVersion, BuildDuckDBVersion, BuildLanceExtVersion, func() api.CacheStatsInfo {
 		reads, stars := store.CacheStats()
 		return api.CacheStatsInfo{
 			PendingReads: reads,
@@ -145,6 +147,9 @@ func main() {
 		return &api.DuckDBProcessInfo{
 			PID:           info.PID,
 			UptimeSeconds: info.UptimeSeconds,
+			DuckDBVersion: info.DuckDBVersion,
+			LanceVersion:  info.LanceVersion,
+			Stopped:       info.Stopped,
 		}
 	}, func() *api.LogBufferStatsInfo {
 		st := store.LogBufferStats()
@@ -227,6 +232,68 @@ func main() {
 	mux.HandleFunc("/api/logs", logsHandler.Handle)
 	mux.HandleFunc("/api/tables/", tablesHandler.Handle)
 	mux.HandleFunc("/api/offline-status", offlineStatusHandler.Handle)
+
+	// POST /api/flush -- trigger immediate write-cache flush to Lance
+	mux.HandleFunc("/api/flush", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		store.FlushPendingChanges()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})
+
+	// POST /api/duckdb/restart -- graceful DuckDB process restart
+	mux.HandleFunc("/api/duckdb/restart", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		serverLogger.Log("info", "lifecycle", "DuckDB graceful restart requested via API", "")
+		if err := store.RestartDuckDB(); err != nil {
+			serverLogger.Log("error", "lifecycle", "DuckDB graceful restart failed: "+err.Error(), "")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		serverLogger.Log("info", "lifecycle", "DuckDB graceful restart completed", "")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})
+
+	// POST /api/duckdb/stop -- flush cache and stop DuckDB for binary upgrade
+	mux.HandleFunc("/api/duckdb/stop", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		serverLogger.Log("info", "lifecycle", "DuckDB stop for upgrade requested via API", "")
+		if err := store.StopDuckDB(); err != nil {
+			serverLogger.Log("error", "lifecycle", "DuckDB stop for upgrade failed: "+err.Error(), "")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		serverLogger.Log("info", "lifecycle", "DuckDB stopped for upgrade -- safe to replace binary", "")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "message": "DuckDB stopped. Safe to replace binary."})
+	})
+
+	// POST /api/duckdb/start -- start DuckDB after binary upgrade
+	mux.HandleFunc("/api/duckdb/start", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		serverLogger.Log("info", "lifecycle", "DuckDB start after upgrade requested via API", "")
+		if err := store.StartDuckDB(); err != nil {
+			serverLogger.Log("error", "lifecycle", "DuckDB start after upgrade failed: "+err.Error(), "")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		serverLogger.Log("info", "lifecycle", "DuckDB started after upgrade", "")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})
 
 	// POST /api/duck-hunt -- easter egg: log duck hunt results
 	mux.HandleFunc("/api/duck-hunt", func(w http.ResponseWriter, r *http.Request) {

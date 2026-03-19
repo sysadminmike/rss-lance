@@ -1,7 +1,9 @@
-//go:build !windows
+//go:build !windows && !duckdb_cli
 
-// Linux/FreeBSD implementation of Store using embedded go-duckdb via CGo.
+// Linux/FreeBSD/macOS implementation of Store using embedded go-duckdb via CGo.
 // Requires GCC at build time. Faster than the CLI driver - no subprocess overhead.
+// When CGo compilation of go-duckdb fails, build with -tags duckdb_cli instead
+// to use the external DuckDB CLI process (same approach as Windows).
 //
 // IMPORTANT: DuckDB is used ONLY as a query/write engine against Lance files.
 // A local server.duckdb file caches extension installs; it can be safely
@@ -46,6 +48,10 @@ type cgoStore struct {
 	// Infrastructure event ring buffer (storage_events)
 	infraRing  *infraRing
 	logDrainCh chan struct{} // signals the drain goroutine when Lance flush succeeds
+
+	probeWake chan struct{} // wakes runHealthProbe when goOffline fires
+
+	logTableCache map[string]bool // cached positive os.Stat results for log tables
 }
 
 // Open connects to DuckDB and loads the Lance extension.
@@ -91,7 +97,7 @@ func Open(dataPath string, duckdbPath ...string) (Store, error) {
 		return nil, fmt.Errorf("open duckdb: %w", err)
 	}
 
-	s := &cgoStore{conn: conn, dataPath: dataPath}
+	s := &cgoStore{conn: conn, dataPath: dataPath, probeWake: make(chan struct{}, 1)}
 	if err := s.bootstrap(); err != nil {
 		conn.Close()
 		return nil, err
@@ -202,6 +208,18 @@ func (s *cgoStore) DuckDBProcessInfo() *DuckDBProcessInfo {
 	return nil
 }
 
+func (s *cgoStore) RestartDuckDB() error {
+	return fmt.Errorf("DuckDB restart not supported on this platform")
+}
+
+func (s *cgoStore) StopDuckDB() error {
+	return fmt.Errorf("DuckDB stop not supported on this platform")
+}
+
+func (s *cgoStore) StartDuckDB() error {
+	return fmt.Errorf("DuckDB start not supported on this platform")
+}
+
 func (s *cgoStore) OfflineStatus() *OfflineStatus {
 	if s.offCache == nil {
 		return nil
@@ -223,6 +241,11 @@ func (s *cgoStore) goOffline(reason error) {
 	if s.offCache.isOffline.CompareAndSwap(false, true) {
 		log.Printf("Switched to offline mode: %v", reason)
 		s.offCache.emitLog("warn", "Switched to offline mode: "+reason.Error())
+		// Wake the health probe so it switches to fast polling immediately.
+		select {
+		case s.probeWake <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -310,12 +333,16 @@ func (s *cgoStore) runHealthProbe(ctx context.Context) {
 
 		select {
 		case <-time.After(interval):
-			alive := s.probeLance()
-			if alive && s.isOffline() {
-				s.handleReconnect()
-			}
+		case <-s.probeWake:
+			// goOffline fired; give a brief pause then probe.
+			time.Sleep(2 * time.Second)
 		case <-ctx.Done():
 			return
+		}
+
+		alive := s.probeLance()
+		if alive && s.isOffline() {
+			s.handleReconnect()
 		}
 	}
 }
@@ -342,16 +369,16 @@ func (s *cgoStore) runPendingFlush(ctx context.Context) {
 			if s.isOffline() {
 				continue // don't flush while Lance is unreachable
 			}
-			s.flushPendingChanges()
+			s.FlushPendingChanges()
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-// flushPendingChanges replays buffered writes from DuckDB into Lance.
+// FlushPendingChanges replays buffered writes from DuckDB into Lance.
 // Clears the in-memory writeCache on success.
-func (s *cgoStore) flushPendingChanges() {
+func (s *cgoStore) FlushPendingChanges() {
 	if s.offCache == nil {
 		return
 	}
@@ -373,7 +400,7 @@ func (s *cgoStore) handleReconnect() {
 	}
 
 	// Flush pending writes (same code path as periodic flush)
-	s.flushPendingChanges()
+	s.FlushPendingChanges()
 
 	// Also drain any cached logs accumulated during the outage
 	s.drainCachedLogs(500)
@@ -687,7 +714,8 @@ func (s *cgoStore) GetArticles(feedID string, limit, offset int, unreadOnly bool
 		SELECT
 			a.article_id, a.feed_id, a.title, a.url, a.author,
 			a.summary, a.published_at, a.fetched_at,
-			%s AS is_read, %s AS is_starred
+			%s AS is_read, %s AS is_starred,
+			a.created_at, a.updated_at
 		FROM %s a
 		%s
 		WHERE 1=1 %s %s
@@ -713,6 +741,7 @@ func (s *cgoStore) GetArticles(feedID string, limit, offset int, unreadOnly bool
 			&a.ArticleID, &a.FeedID, &a.Title, &a.URL, &a.Author,
 			&a.Summary, &a.PublishedAt, &a.FetchedAt,
 			&a.IsRead, &a.IsStarred,
+			&a.CreatedAt, &a.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1144,9 +1173,20 @@ func (s *cgoStore) QueryTable(table string, limit, offset int) (*TableQueryResul
 // ── Logging queries ───────────────────────────────────────────────────────────
 
 func (s *cgoStore) logTableExists(name string) bool {
+	// Cache positive results -- once a log table exists it stays
+	if s.logTableCache[name] {
+		return true
+	}
 	dir := filepath.Join(s.dataPath, name+".lance")
 	info, err := os.Stat(dir)
-	return err == nil && info.IsDir()
+	exists := err == nil && info.IsDir()
+	if exists {
+		if s.logTableCache == nil {
+			s.logTableCache = make(map[string]bool)
+		}
+		s.logTableCache[name] = true
+	}
+	return exists
 }
 
 func (s *cgoStore) WriteLog(entry LogEntry) error {

@@ -65,8 +65,42 @@ If omitted, the scripts default to their own directory.
 |---|---|---|
 | `-NoTests` | Windows | Skip tests when running `all`: `.\build.ps1 -NoTests all` |
 | `--no-tests` | Linux/macOS | Skip tests when running `all`: `./build.sh --no-tests all` |
+| `--force-embedded` | Linux/macOS | Build only with embedded DuckDB (CGo); fail if compilation fails |
+| `--force-external` | Linux/macOS | Build only with external DuckDB CLI process; skip embedded attempt |
 
 Tests are **enabled by default** in the `all` command.
+
+### DuckDB Build Modes (Linux/macOS)
+
+The `server` command supports two DuckDB integration modes:
+
+| Mode | Description |
+|---|---|
+| **Embedded** (default) | DuckDB is compiled into the binary via CGo (`go-duckdb`). Fastest at runtime. Requires GCC and working CGo environment. |
+| **External** | DuckDB runs as a separate CLI process (`tools/duckdb`). Used on Windows by default. Available on Linux/macOS as a fallback when embedded compilation fails. |
+
+**Default behavior:** The build script tries embedded mode first. If CGo compilation fails (missing GCC, incompatible libraries, etc.), it automatically falls back to external mode and downloads the DuckDB CLI binary.
+
+**Override flags:**
+- `--force-embedded` - Only try embedded mode; exit with error if it fails (no fallback)
+- `--force-external` - Skip embedded mode entirely; build with external DuckDB process
+
+```bash
+# Default: try embedded, fall back to external automatically
+./build.sh server
+
+# Force external DuckDB process mode
+./build.sh --force-external server
+
+# Force embedded only (no fallback)
+./build.sh --force-embedded server
+```
+
+When building with external mode, the DuckDB CLI binary is downloaded automatically into `tools/` if not already present. The server requires this binary at runtime.
+
+> **Upgrade without rebuilding:** A key advantage of external mode is that you can upgrade DuckDB by simply replacing the `tools/duckdb` binary. Use the **Stop for Upgrade** button on the Server Status page (or `POST /api/duckdb/stop`) to flush the write cache and stop DuckDB safely. Then replace the binary and click **Start DuckDB** (or `POST /api/duckdb/start`). The Go server does not need to be recompiled or restarted -- the new DuckDB version and Lance extension version are detected automatically on each process start. **Note:** The upgrade cannot be started while the server is offline, because the write cache flush requires Lance to be reachable.
+
+At build time, the DuckDB CLI version and Lance extension version are captured and baked into the server binary. These appear in the `/api/server-status` response under `server.build_duckdb_version` and `server.build_lance_ext_version`.
 
 ### Minimal Build
 

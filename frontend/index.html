@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src * data:; media-src *; connect-src 'self';" />
   <title>RSS-Lance</title>
   <link rel="stylesheet" href="/css/style.css" />
   <link rel="stylesheet" href="/css/custom.css" />
@@ -15,8 +16,8 @@
     <aside id="sidebar">
       <div id="sidebar-header">
         <span class="app-title">RSS-Lance</span>
-        <button id="btn-add-feed" title="Add feed">＋</button>
-        <button id="btn-mark-all-read" title="Mark all read">✓</button>
+        <button id="btn-add-feed" title="Add feed" aria-label="Add feed">+</button>
+        <button id="btn-mark-all-read" title="Mark all read" aria-label="Mark all read">&#x2713;</button>
       </div>
       <nav id="feed-list">
         <div class="loading-msg">Loading feeds…</div>

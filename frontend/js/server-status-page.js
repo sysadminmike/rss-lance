@@ -165,6 +165,8 @@ function renderPage(container, data, offlineData = {}) {
       ${statCard('Host Up', host.uptime_seconds >= 0 ? formatDuration(host.uptime_seconds) : 'N/A', '\uD83D\uDDA5')}
       ${statCard('RSS-Lance Up', formatDuration(srv.uptime_seconds), '\u23F1')}
       ${duckdb ? statCard('DuckDB Up', formatDuration(duckdb.uptime_seconds), '\uD83E\uDD86') : ''}
+      ${duckdb && duckdb.duckdb_version ? statCard('DuckDB', duckdb.duckdb_version, '\uD83D\uDCE6') : ''}
+      ${duckdb && duckdb.lance_version ? statCard('Lance Ext', duckdb.lance_version, '\uD83D\uDD31') : ''}
       ${(() => {
         const offline = offlineData.offline;
         const label = 'Lance Tables';
@@ -233,15 +235,56 @@ function renderPage(container, data, offlineData = {}) {
             <span class="cache-stat-label">Flush Duration</span>
           </div>
         </div>
+        <button id="flush-cache-btn" class="flush-btn" aria-label="Flush write cache to Lance">Flush Now</button>
       </div>
     </div>
+
+    ${duckdb ? `
+    <div class="status-section">
+      <h2>DuckDB Process</h2>
+      ${duckdb.stopped ? `
+      <div style="background:var(--bg-warning, #fff3cd);border:1px solid var(--border-warning, #ffc107);border-radius:6px;padding:12px 16px;margin-bottom:12px;color:var(--text-warning, #856404)">
+        <strong>DuckDB is stopped for upgrade.</strong> Replace the <code>tools/duckdb</code> binary, then click <strong>Start DuckDB</strong> below.
+        ${duckdb.duckdb_version ? `<br>Previous version: DuckDB ${duckdb.duckdb_version}` : ''}
+        ${duckdb.lance_version ? `, Lance ext ${duckdb.lance_version}` : ''}
+      </div>
+      <button id="start-duckdb-btn" class="flush-btn" aria-label="Start DuckDB after binary upgrade">Start DuckDB</button>
+      ` : `
+      <div class="cache-stats">
+        <div class="cache-stat">
+          <span class="cache-stat-value">${duckdb.pid}</span>
+          <span class="cache-stat-label">PID</span>
+        </div>
+        <div class="cache-stat">
+          <span class="cache-stat-value">${formatDuration(duckdb.uptime_seconds)}</span>
+          <span class="cache-stat-label">Uptime</span>
+        </div>
+        <div class="cache-stat">
+          <span class="cache-stat-value">${duckdb.duckdb_version || 'N/A'}</span>
+          <span class="cache-stat-label">DuckDB Version</span>
+        </div>
+        <div class="cache-stat">
+          <span class="cache-stat-value">${duckdb.lance_version || 'N/A'}</span>
+          <span class="cache-stat-label">Lance Extension</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button id="restart-duckdb-btn" class="flush-btn" aria-label="Gracefully restart DuckDB process">Restart DuckDB</button>
+        <button id="stop-duckdb-btn" class="flush-btn" aria-label="Flush cache and stop DuckDB for binary upgrade" style="background:var(--btn-warning-bg, #e2a300);color:var(--btn-warning-text, #000)">Stop for Upgrade</button>
+      </div>
+      `}
+    </div>
+    ` : ''}
 
     <div class="status-section">
       <h2>Server Info</h2>
       <table class="status-table">
         <tbody>
           <tr><td>PID</td><td>${srv.pid}</td></tr>
-          ${duckdb ? `<tr><td>DuckDB PID</td><td>${duckdb.pid}</td></tr>` : ''}
+          ${duckdb && !duckdb.stopped ? `<tr><td>DuckDB PID</td><td>${duckdb.pid}</td></tr>` : ''}
+          ${duckdb && duckdb.stopped ? `<tr><td>DuckDB Status</td><td>Stopped for upgrade</td></tr>` : ''}
+          ${duckdb && duckdb.duckdb_version ? `<tr><td>DuckDB Version</td><td>${duckdb.duckdb_version}</td></tr>` : ''}
+          ${duckdb && duckdb.lance_version ? `<tr><td>Lance Extension</td><td>${duckdb.lance_version}</td></tr>` : ''}
           <tr><td>Go Version</td><td>${srv.go_version}</td></tr>
           <tr><td>OS / Arch</td><td>${srv.os} / ${srv.arch}</td></tr>
           <tr><td>CPUs</td><td>${srv.num_cpu}</td></tr>
@@ -262,6 +305,76 @@ function renderPage(container, data, offlineData = {}) {
     <p class="status-subtitle" style="text-align:right;margin-top:8px">${refreshLabel} | ${_timestamps.length} data points</p>
     </div>
   `;
+
+  // Wire up flush button
+  const flushBtn = container.querySelector('#flush-cache-btn');
+  if (flushBtn) {
+    flushBtn.onclick = async () => {
+      flushBtn.disabled = true;
+      flushBtn.textContent = 'Flushing...';
+      try {
+        await apiFetch('/api/flush', { method: 'POST' });
+        flushBtn.textContent = 'Flushed!';
+        setTimeout(() => { flushBtn.textContent = 'Flush Now'; flushBtn.disabled = false; }, 2000);
+      } catch {
+        flushBtn.textContent = 'Error';
+        setTimeout(() => { flushBtn.textContent = 'Flush Now'; flushBtn.disabled = false; }, 2000);
+      }
+    };
+  }
+
+  // Wire up DuckDB restart button
+  const restartBtn = container.querySelector('#restart-duckdb-btn');
+  if (restartBtn) {
+    restartBtn.onclick = async () => {
+      restartBtn.disabled = true;
+      restartBtn.textContent = 'Restarting...';
+      try {
+        await apiFetch('/api/duckdb/restart', { method: 'POST' });
+        restartBtn.textContent = 'Restarted!';
+        setTimeout(() => { restartBtn.textContent = 'Restart DuckDB'; restartBtn.disabled = false; }, 2000);
+        fetchAndRender(container);
+      } catch {
+        restartBtn.textContent = 'Error';
+        setTimeout(() => { restartBtn.textContent = 'Restart DuckDB'; restartBtn.disabled = false; }, 2000);
+      }
+    };
+  }
+
+  // Wire up DuckDB stop-for-upgrade button
+  const stopBtn = container.querySelector('#stop-duckdb-btn');
+  if (stopBtn) {
+    stopBtn.onclick = async () => {
+      if (!confirm('This will flush the write cache and stop DuckDB.\\nAPI queries will fail until you start it again.\\n\\nContinue?')) return;
+      stopBtn.disabled = true;
+      stopBtn.textContent = 'Stopping...';
+      try {
+        await apiFetch('/api/duckdb/stop', { method: 'POST' });
+        stopBtn.textContent = 'Stopped!';
+        fetchAndRender(container);
+      } catch {
+        stopBtn.textContent = 'Error';
+        setTimeout(() => { stopBtn.textContent = 'Stop for Upgrade'; stopBtn.disabled = false; }, 2000);
+      }
+    };
+  }
+
+  // Wire up DuckDB start-after-upgrade button
+  const startBtn = container.querySelector('#start-duckdb-btn');
+  if (startBtn) {
+    startBtn.onclick = async () => {
+      startBtn.disabled = true;
+      startBtn.textContent = 'Starting...';
+      try {
+        await apiFetch('/api/duckdb/start', { method: 'POST' });
+        startBtn.textContent = 'Started!';
+        fetchAndRender(container);
+      } catch {
+        startBtn.textContent = 'Error';
+        setTimeout(() => { startBtn.textContent = 'Start DuckDB'; startBtn.disabled = false; }, 2000);
+      }
+    };
+  }
 }
 
 // ── SVG Chart Renderers ─────────────────────────────────────────────────────

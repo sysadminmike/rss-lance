@@ -63,14 +63,14 @@ def _to_utc(t: struct_time | None) -> datetime | None:
         return None
 
 
-def _guid(entry: feedparser.FeedParserDict) -> str:
+def _guid(entry: feedparser.FeedParserDict, feed_id: str = "") -> str:
     """Derive a stable GUID for an entry."""
     if entry.get("id"):
         return entry["id"]
     if entry.get("link"):
         return entry["link"]
-    # Fallback: hash title + published
-    raw = (entry.get("title", "") + entry.get("published", "")).encode()
+    # Fallback: hash title + published + feed_id to avoid collisions
+    raw = (feed_id + entry.get("title", "") + entry.get("published", "")).encode()
     return hashlib.sha1(raw).hexdigest()
 
 
@@ -148,7 +148,7 @@ def fetch_feed(url: str, feed_id: str, user_agent: str = "RSS-Lance/1.0",
                 "fetched_at":   now,
                 "is_read":      False,
                 "is_starred":   False,
-                "guid":         _guid(entry),
+                "guid":         _guid(entry, feed_id),
                 "schema_version": SCHEMA_VERSION,
                 "created_at":   now,
                 "updated_at":   now,

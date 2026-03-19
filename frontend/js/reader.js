@@ -732,5 +732,43 @@ function sanitise(html) {
   const deSocialed = _stripSocialContainers(cleaned);
   const deNavd = _stripSiteChrome(deSocialed);
   const deTracked = _stripTrackingParams(deNavd);
-  return _stripEmptyElements(deTracked);
+  const deEmpty = _stripEmptyElements(deTracked);
+  return _domSanitise(deEmpty);
+}
+
+/** DOM-based sanitisation pass: removes dangerous elements and attributes
+ *  that regex-based stripping might miss (encoded entities, SVG vectors, etc.). */
+function _domSanitise(html) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  const root = tpl.content;
+
+  // Remove dangerous elements entirely
+  const dangerousTags = 'script,style,iframe,object,embed,applet,form,base,meta,link,svg';
+  root.querySelectorAll(dangerousTags).forEach(el => el.remove());
+
+  // Walk all remaining elements
+  root.querySelectorAll('*').forEach(el => {
+    // Remove ALL event handler attributes (on*)
+    for (const attr of [...el.attributes]) {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith('on')) {
+        el.removeAttribute(attr.name);
+      }
+    }
+    // Sanitise href/src/action -- block javascript:, data:, vbscript:
+    for (const attr of ['href', 'src', 'action', 'formaction', 'xlink:href']) {
+      const val = el.getAttribute(attr);
+      if (val) {
+        const trimmed = val.replace(/[\s\x00-\x1f]/g, '').toLowerCase();
+        if (/^(javascript|data|vbscript):/i.test(trimmed)) {
+          el.removeAttribute(attr);
+        }
+      }
+    }
+  });
+
+  const div = document.createElement('div');
+  div.appendChild(root.cloneNode(true));
+  return div.innerHTML;
 }

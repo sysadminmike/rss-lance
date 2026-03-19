@@ -1,8 +1,8 @@
-//go:build windows
+//go:build windows || duckdb_cli
 
-// Persistent DuckDB process for Windows.
+// Persistent DuckDB process for Windows and CLI-mode builds.
 //
-// Instead of spawning a new duckdb.exe per query (~600ms each), this keeps
+// Instead of spawning a new duckdb process per query (~600ms each), this keeps
 // a single long-running process alive and pipes SQL via stdin/stdout.
 // The Lance extension is loaded once at startup (LOAD lance) and the data
 // directory attached once (ATTACH ... AS _lance).  Queries are delimited
@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -41,18 +42,23 @@ type duckDBProcess struct {
 	dbPath    string // local .duckdb file (for INSTALL cache)
 	dataPath  string // lance data directory to ATTACH
 
-	mu        sync.Mutex // serializes all queries
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	reader    *bufio.Reader
-	alive     bool
-	restartMu sync.Mutex // serializes restart attempts
-	procStart time.Time  // when the current duckdb.exe process was started
+	mu                sync.Mutex // serializes all queries
+	cmd               *exec.Cmd
+	stdin             io.WriteCloser
+	reader            *bufio.Reader
+	alive             bool
+	restartMu         sync.Mutex // serializes restart attempts
+	procStart         time.Time  // when the current duckdb.exe process was started
+	stoppedForUpgrade bool       // when true, suppress auto-restart (user is replacing binary)
 
 	// resultCh receives parsed JSON arrays from the reader goroutine.
 	resultCh chan queryResult
 
 	logFn func(entry LogEntry) // optional: structured log callback (Lance log table)
+
+	// Version info captured on each start
+	duckdbVersion string
+	lanceVersion  string
 }
 
 type queryResult struct {
@@ -93,6 +99,14 @@ func (d *duckDBProcess) emitLog(level, message string) {
 // loads the lance extension, attaches the data directory, and verifies
 // the setup with a test query.
 func (d *duckDBProcess) start() error {
+	// Verify the data directory exists before spawning the process.
+	// If the path was removed (e.g. renamed away), ATTACH would silently
+	// create an empty Lance dataset, making queries return 0 rows instead
+	// of failing — which prevents offline detection.
+	if _, statErr := os.Stat(d.dataPath); statErr != nil {
+		return fmt.Errorf("duckdb data path unavailable: %w", statErr)
+	}
+
 	cmd := exec.Command(d.duckdbBin, ":memory:", "-json")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -153,9 +167,27 @@ func (d *duckDBProcess) start() error {
 		return fmt.Errorf("duckdb lance extension not loaded (got %q)", name)
 	}
 
+	// Query DuckDB version
+	d.duckdbVersion = ""
+	verRows, verErr := d.queryInternal("SELECT version() AS v")
+	if verErr == nil && len(verRows) > 0 {
+		if v, ok := verRows[0]["v"].(string); ok {
+			d.duckdbVersion = v
+		}
+	}
+
+	// Query Lance extension version
+	d.lanceVersion = ""
+	extRows, extErr := d.queryInternal("SELECT extension_version FROM duckdb_extensions() WHERE extension_name='lance' AND loaded=true")
+	if extErr == nil && len(extRows) > 0 {
+		if v, ok := extRows[0]["extension_version"].(string); ok {
+			d.lanceVersion = v
+		}
+	}
+
 	d.procStart = time.Now()
-	log.Printf("DuckDB persistent process started (pid %d), lance loaded, data attached", cmd.Process.Pid)
-	d.emitLog("info", fmt.Sprintf("DuckDB persistent process started (pid %d)", cmd.Process.Pid))
+	log.Printf("DuckDB persistent process started (pid %d), duckdb %s, lance ext %s", cmd.Process.Pid, d.duckdbVersion, d.lanceVersion)
+	d.emitLog("info", fmt.Sprintf("DuckDB persistent process started (pid %d), duckdb %s, lance ext %s", cmd.Process.Pid, d.duckdbVersion, d.lanceVersion))
 	return nil
 }
 
@@ -276,6 +308,10 @@ func (d *duckDBProcess) query(sql string) ([]map[string]any, error) {
 
 	debug.Log(debug.DuckDB, "PERSISTENT QUERY >>>\n%s", sql)
 
+	if d.stoppedForUpgrade {
+		return nil, fmt.Errorf("DuckDB is stopped for upgrade -- replace the binary and click Start")
+	}
+
 	if !d.alive {
 		debug.Log(debug.DuckDB, "Process dead, restarting before query")
 		if err := d.restart(); err != nil {
@@ -285,6 +321,9 @@ func (d *duckDBProcess) query(sql string) ([]map[string]any, error) {
 
 	rows, err := d.sendAndRead(sql)
 	if err != nil {
+		if d.stoppedForUpgrade {
+			return nil, fmt.Errorf("DuckDB is stopped for upgrade -- replace the binary and click Start")
+		}
 		// Could be broken pipe / EOF -- try restart + retry once
 		log.Printf("ERROR: DuckDB process query failed (%v), attempting restart", err)
 		d.emitLog("error", fmt.Sprintf("DuckDB process query failed: %v, attempting restart", err))
@@ -312,6 +351,10 @@ func (d *duckDBProcess) execStmt(sql string) error {
 
 	debug.Log(debug.DuckDB, "PERSISTENT EXEC >>>\n%s", sql)
 
+	if d.stoppedForUpgrade {
+		return fmt.Errorf("DuckDB is stopped for upgrade -- replace the binary and click Start")
+	}
+
 	if !d.alive {
 		debug.Log(debug.DuckDB, "Process dead, restarting before exec")
 		if err := d.restart(); err != nil {
@@ -321,6 +364,9 @@ func (d *duckDBProcess) execStmt(sql string) error {
 
 	_, err := d.sendAndRead(sql)
 	if err != nil {
+		if d.stoppedForUpgrade {
+			return fmt.Errorf("DuckDB is stopped for upgrade -- replace the binary and click Start")
+		}
 		log.Printf("ERROR: DuckDB process exec failed (%v), attempting restart", err)
 		d.emitLog("error", fmt.Sprintf("DuckDB process exec failed: %v, attempting restart", err))
 		d.alive = false
@@ -425,6 +471,59 @@ func (d *duckDBProcess) close() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.kill()
+}
+
+// queryInternal sends SQL via the sentinel protocol without acquiring the
+// mutex.  It is intended for use during start() where the mutex is not
+// held and no other goroutine has access yet.
+func (d *duckDBProcess) queryInternal(sql string) ([]map[string]any, error) {
+	return d.sendAndRead(sql)
+}
+
+// gracefulRestart acquires the query mutex (waiting for any running query
+// to finish), then kills and restarts the DuckDB process.
+func (d *duckDBProcess) gracefulRestart() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	log.Printf("Graceful DuckDB restart requested")
+	d.emitLog("info", "Graceful DuckDB restart requested")
+	d.alive = false
+	d.stoppedForUpgrade = false
+	return d.restart()
+}
+
+// stopForUpgrade acquires the query mutex (waiting for any running query
+// to finish), kills the DuckDB process, and sets the stoppedForUpgrade
+// flag to suppress auto-restart.  The caller should flush the write cache
+// before calling this.
+func (d *duckDBProcess) stopForUpgrade() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	log.Printf("DuckDB stop for upgrade requested")
+	d.emitLog("info", "DuckDB stop for upgrade requested")
+	d.kill()
+	d.stoppedForUpgrade = true
+	log.Printf("DuckDB stopped for upgrade (pid was %d)", d.pid())
+	d.emitLog("info", "DuckDB stopped for upgrade -- safe to replace binary")
+	return nil
+}
+
+// startAfterUpgrade clears the stoppedForUpgrade flag and starts a fresh
+// DuckDB process.  Returns the new version info.
+func (d *duckDBProcess) startAfterUpgrade() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if !d.stoppedForUpgrade {
+		return fmt.Errorf("DuckDB is not stopped for upgrade")
+	}
+
+	log.Printf("DuckDB start after upgrade requested")
+	d.emitLog("info", "DuckDB start after upgrade requested")
+	d.stoppedForUpgrade = false
+	return d.restart()
 }
 
 // pid returns the PID of the running duckdb.exe process, or 0 if not running.

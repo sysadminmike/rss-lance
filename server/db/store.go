@@ -14,6 +14,7 @@ package db
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -63,19 +64,45 @@ type Store interface {
 	// DuckDB external process info (Windows only; returns nil on CGo platforms)
 	DuckDBProcessInfo() *DuckDBProcessInfo
 
+	// RestartDuckDB gracefully restarts the DuckDB process (waits for running query)
+	RestartDuckDB() error
+
+	// StopDuckDB flushes the write cache and stops DuckDB for a binary upgrade.
+	// Auto-restart is suppressed until StartDuckDB is called.
+	StopDuckDB() error
+
+	// StartDuckDB starts DuckDB after a binary upgrade (clears upgrade-stop flag).
+	StartDuckDB() error
+
 	// Raw table viewer
 	QueryTable(table string, limit, offset int) (*TableQueryResult, error)
 
 	// Offline cache status (nil when offline mode is disabled)
 	OfflineStatus() *OfflineStatus
+
+	// FlushPendingChanges triggers an immediate flush of buffered writes
+	// from DuckDB pending_changes into Lance.
+	FlushPendingChanges()
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 // DuckDBProcessInfo holds info about the external duckdb.exe process (Windows only).
 type DuckDBProcessInfo struct {
-	PID           int   `json:"pid"`
-	UptimeSeconds int64 `json:"uptime_seconds"`
+	PID           int    `json:"pid"`
+	UptimeSeconds int64  `json:"uptime_seconds"`
+	DuckDBVersion string `json:"duckdb_version,omitempty"`
+	LanceVersion  string `json:"lance_version,omitempty"`
+	Stopped       bool   `json:"stopped"`
+}
+
+// LanceProcessInfo holds info about the Lance Python sidecar process (external mode only).
+type LanceProcessInfo struct {
+	PID            int    `json:"pid"`
+	UptimeSeconds  int64  `json:"uptime_seconds"`
+	LanceDBVersion string `json:"lancedb_version,omitempty"`
+	PyArrowVersion string `json:"pyarrow_version,omitempty"`
+	Mode           string `json:"mode"` // "embedded" or "external"
 }
 
 type Feed struct {
@@ -210,6 +237,12 @@ var allowedTables = map[string]bool{
 	"log_fetcher":   true,
 }
 
+// isCloudURI returns true for cloud storage URIs (s3://, gs://, az://).
+func isCloudURI(path string) bool {
+	return len(path) > 5 &&
+		(path[:5] == "s3://" || path[:5] == "gs://" || path[:5] == "az://")
+}
+
 // escapeSQ escapes single quotes for inline SQL string literals.
 func escapeSQ(s string) string {
 	out := make([]rune, 0, len(s))
@@ -245,12 +278,9 @@ func settingInt(settings map[string]string, key string, def int) int {
 	}
 	// Settings may be stored as JSON-encoded strings (e.g. "20" or just 20)
 	v = strings.Trim(v, "\"")
-	n := 0
-	for _, ch := range v {
-		if ch < '0' || ch > '9' {
-			return def
-		}
-		n = n*10 + int(ch-'0')
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
 	}
 	return n
 }

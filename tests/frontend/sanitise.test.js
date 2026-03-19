@@ -137,6 +137,77 @@ function _stripTrackingParams(html) {
   return div.innerHTML;
 }
 
+function _stripEmptyElements(html) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  const root = tpl.content;
+
+  const _hasMedia = el => el.querySelector('img, video, picture, canvas, svg, audio, iframe');
+  const _isEmpty = el => !el.textContent.replace(/[\s\u00A0]/g, '') && !_hasMedia(el);
+
+  root.querySelectorAll('p, span, a, li, figcaption').forEach(el => {
+    if (_isEmpty(el)) el.remove();
+  });
+  root.querySelectorAll('figure').forEach(el => {
+    if (_isEmpty(el)) el.remove();
+  });
+  root.querySelectorAll('div, section, aside, header, footer, nav').forEach(el => {
+    if (_isEmpty(el)) el.remove();
+  });
+  root.querySelectorAll('ul, ol').forEach(el => {
+    if (_isEmpty(el)) el.remove();
+  });
+  root.querySelectorAll('br').forEach(br => {
+    let count = 1;
+    while (br.nextSibling) {
+      const sib = br.nextSibling;
+      if (sib.nodeType === Node.ELEMENT_NODE && sib.tagName === 'BR') {
+        count++;
+        sib.remove();
+      } else if (sib.nodeType === Node.TEXT_NODE && !sib.textContent.trim()) {
+        sib.remove();
+      } else {
+        break;
+      }
+    }
+  });
+
+  const div = document.createElement('div');
+  div.appendChild(root.cloneNode(true));
+  return div.innerHTML;
+}
+
+function _domSanitise(html) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  const root = tpl.content;
+
+  const dangerousTags = 'script,style,iframe,object,embed,applet,form,base,meta,link,svg';
+  root.querySelectorAll(dangerousTags).forEach(el => el.remove());
+
+  root.querySelectorAll('*').forEach(el => {
+    for (const attr of [...el.attributes]) {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith('on')) {
+        el.removeAttribute(attr.name);
+      }
+    }
+    for (const attr of ['href', 'src', 'action', 'formaction', 'xlink:href']) {
+      const val = el.getAttribute(attr);
+      if (val) {
+        const trimmed = val.replace(/[\s\x00-\x1f]/g, '').toLowerCase();
+        if (/^(javascript|data|vbscript):/i.test(trimmed)) {
+          el.removeAttribute(attr);
+        }
+      }
+    }
+  });
+
+  const div = document.createElement('div');
+  div.appendChild(root.cloneNode(true));
+  return div.innerHTML;
+}
+
 function sanitise(html) {
   const cleaned = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
@@ -145,7 +216,9 @@ function sanitise(html) {
     .replace(/\son\w+=["'][^"']*["']/gi, '')
     .replace(_SOCIAL_RE, '');
   const deSocialed = _stripSocialContainers(cleaned);
-  return _stripTrackingParams(deSocialed);
+  const deTracked = _stripTrackingParams(deSocialed);
+  const deEmpty = _stripEmptyElements(deTracked);
+  return _domSanitise(deEmpty);
 }
 
 describe('sanitise', () => {
@@ -359,5 +432,121 @@ describe('sanitise', () => {
     const result = sanitise(input);
     expect(result).toContain('https://example.com/article');
     expect(result).toContain('Read more');
+  });
+});
+
+// -- DOM-based XSS sanitiser tests (_domSanitise) --------------------------------
+
+describe('_domSanitise', () => {
+  test('removes SVG elements', () => {
+    const input = '<p>Text</p><svg onload="alert(1)"><circle r="10"></circle></svg>';
+    const result = _domSanitise(input);
+    expect(result).not.toContain('<svg');
+    expect(result).toContain('Text');
+  });
+
+  test('removes object tags', () => {
+    const input = '<p>Safe</p><object data="evil.swf"><param name="x" value="y"></object>';
+    const result = _domSanitise(input);
+    expect(result).not.toContain('<object');
+    expect(result).toContain('Safe');
+  });
+
+  test('removes embed tags', () => {
+    const input = '<p>Content</p><embed src="evil.swf" type="application/x-shockwave-flash">';
+    const result = _domSanitise(input);
+    expect(result).not.toContain('<embed');
+    expect(result).toContain('Content');
+  });
+
+  test('removes applet tags', () => {
+    const input = '<p>Article</p><applet code="Evil.class"></applet>';
+    const result = _domSanitise(input);
+    expect(result).not.toContain('<applet');
+    expect(result).toContain('Article');
+  });
+
+  test('removes form elements', () => {
+    const input = '<p>Text</p><form action="https://evil.com"><input type="hidden" name="csrf"></form>';
+    const result = _domSanitise(input);
+    expect(result).not.toContain('<form');
+    expect(result).not.toContain('<input');
+    expect(result).toContain('Text');
+  });
+
+  test('removes base tags', () => {
+    const input = '<base href="https://evil.com"><p>Content</p>';
+    const result = _domSanitise(input);
+    expect(result).not.toContain('<base');
+    expect(result).toContain('Content');
+  });
+
+  test('removes meta tags', () => {
+    const input = '<meta http-equiv="refresh" content="0;url=https://evil.com"><p>Text</p>';
+    const result = _domSanitise(input);
+    expect(result).not.toContain('<meta');
+    expect(result).toContain('Text');
+  });
+
+  test('removes link tags', () => {
+    const input = '<link rel="stylesheet" href="https://evil.com/style.css"><p>Safe</p>';
+    const result = _domSanitise(input);
+    expect(result).not.toContain('<link');
+    expect(result).toContain('Safe');
+  });
+
+  test('strips all on* event handler attributes via DOM walk', () => {
+    const input = '<div onclick="alert(1)" onmouseover="evil()" onfocus="bad()">Content</div>';
+    const result = _domSanitise(input);
+    expect(result).not.toContain('onclick');
+    expect(result).not.toContain('onmouseover');
+    expect(result).not.toContain('onfocus');
+    expect(result).toContain('Content');
+  });
+
+  test('blocks javascript: URIs in href', () => {
+    const input = '<a href="javascript:alert(document.cookie)">Click</a>';
+    const result = _domSanitise(input);
+    expect(result).not.toContain('javascript:');
+    expect(result).toContain('Click');
+  });
+
+  test('blocks javascript: URIs with whitespace evasion', () => {
+    const input = '<a href="java\tscript:alert(1)">Click</a>';
+    const result = _domSanitise(input);
+    expect(result).not.toContain('javascript:');
+    expect(result).toContain('Click');
+  });
+
+  test('blocks data: URIs in src', () => {
+    const input = '<img src="data:image/svg+xml,<svg onload=alert(1)>">';
+    const result = _domSanitise(input);
+    expect(result).not.toContain('data:');
+  });
+
+  test('blocks vbscript: URIs in href', () => {
+    const input = '<a href="vbscript:MsgBox(1)">Click</a>';
+    const result = _domSanitise(input);
+    expect(result).not.toContain('vbscript:');
+    expect(result).toContain('Click');
+  });
+
+  test('blocks javascript: in formaction', () => {
+    const input = '<button formaction="javascript:alert(1)">Submit</button>';
+    const result = _domSanitise(input);
+    expect(result).not.toContain('javascript:');
+    expect(result).toContain('Submit');
+  });
+
+  test('preserves safe content unchanged', () => {
+    const input = '<p>Safe <a href="https://example.com">link</a> and <img src="https://example.com/img.png"></p>';
+    const result = _domSanitise(input);
+    expect(result).toContain('https://example.com');
+    expect(result).toContain('Safe');
+    expect(result).toContain('link');
+  });
+
+  test('handles empty string', () => {
+    expect(_domSanitise('')).toBe('');
   });
 });

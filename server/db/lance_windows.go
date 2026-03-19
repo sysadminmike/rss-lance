@@ -1,8 +1,9 @@
-//go:build windows
+//go:build windows || duckdb_cli
 
-// Windows implementation of Store using a persistent duckdb.exe CLI process.
-// No CGo or GCC required - queries are piped via stdin and JSON results
-// read from stdout of a single long-running duckdb.exe process.
+// CLI implementation of Store using a persistent DuckDB CLI process.
+// Used on Windows always, and on Linux/macOS/FreeBSD when built with
+// -tags duckdb_cli (fallback when embedded go-duckdb CGo fails to compile).
+// Queries are piped via stdin and JSON results read from stdout.
 //
 // IMPORTANT: DuckDB is used ONLY as a query/write engine against Lance files.
 // A local server.duckdb file caches extension installs; it can be safely
@@ -22,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -52,15 +54,27 @@ type cliStore struct {
 	// Infrastructure event ring buffer (storage_events)
 	infraRing  *infraRing
 	logDrainCh chan struct{} // signals the drain goroutine when Lance flush succeeds
+
+	probeWake chan struct{} // wakes runHealthProbe when goOffline fires
+
+	logTableCache map[string]bool // cached positive os.Stat results for log tables
 }
 
-// findDuckDB locates the duckdb.exe binary.
-// Search order: next to server binary → tools/ subdir → PATH.
+// findDuckDB locates the DuckDB CLI binary.
+// Search order: next to server binary -> tools/ subdir -> PATH.
 func findDuckDB() (string, error) {
+	// Binary name and path separator differ by OS
+	binName := "duckdb"
+	toolsRel := "tools/duckdb"
+	if runtime.GOOS == "windows" {
+		binName = "duckdb.exe"
+		toolsRel = "tools\\duckdb.exe"
+	}
+
 	exe, err := os.Executable()
 	if err == nil {
 		dir := filepath.Dir(exe)
-		for _, rel := range []string{"duckdb.exe", "tools\\duckdb.exe"} {
+		for _, rel := range []string{binName, toolsRel} {
 			candidate := filepath.Join(dir, rel)
 			if _, err := os.Stat(candidate); err == nil {
 				return candidate, nil
@@ -68,7 +82,7 @@ func findDuckDB() (string, error) {
 		}
 	}
 	// Also check relative to CWD
-	for _, rel := range []string{"tools\\duckdb.exe", "duckdb.exe"} {
+	for _, rel := range []string{toolsRel, binName} {
 		if _, err := os.Stat(rel); err == nil {
 			abs, _ := filepath.Abs(rel)
 			return abs, nil
@@ -78,8 +92,8 @@ func findDuckDB() (string, error) {
 		return p, nil
 	}
 	return "", fmt.Errorf(
-		"duckdb.exe not found - place it next to the server binary, in tools/, or add to PATH.\n" +
-			"Download from https://github.com/duckdb/duckdb/releases")
+		"%s not found - place it next to the server binary, in tools/, or add to PATH.\n"+
+			"Download from https://github.com/duckdb/duckdb/releases", binName)
 }
 
 // Open creates a cliStore backed by an external duckdb.exe process.
@@ -131,6 +145,7 @@ func Open(dataPath string, duckdbPath ...string) (Store, error) {
 		dataPath:  dataPath,
 		dbPath:    dbPath,
 		duckdbBin: duckdbBin,
+		probeWake: make(chan struct{}, 1),
 	}
 
 	if err := s.bootstrap(); err != nil {
@@ -244,6 +259,16 @@ func (s *cliStore) DuckDBProcessInfo() *DuckDBProcessInfo {
 	if s.duckProc == nil {
 		return nil
 	}
+	// When stopped for upgrade, return info with Stopped=true and last-known versions
+	if s.duckProc.stoppedForUpgrade {
+		return &DuckDBProcessInfo{
+			PID:           0,
+			UptimeSeconds: 0,
+			DuckDBVersion: s.duckProc.duckdbVersion,
+			LanceVersion:  s.duckProc.lanceVersion,
+			Stopped:       true,
+		}
+	}
 	pid := s.duckProc.pid()
 	if pid == 0 {
 		return nil
@@ -251,7 +276,35 @@ func (s *cliStore) DuckDBProcessInfo() *DuckDBProcessInfo {
 	return &DuckDBProcessInfo{
 		PID:           pid,
 		UptimeSeconds: int64(s.duckProc.uptime().Seconds()),
+		DuckDBVersion: s.duckProc.duckdbVersion,
+		LanceVersion:  s.duckProc.lanceVersion,
 	}
+}
+
+func (s *cliStore) RestartDuckDB() error {
+	if s.duckProc == nil {
+		return fmt.Errorf("no DuckDB process to restart")
+	}
+	return s.duckProc.gracefulRestart()
+}
+
+func (s *cliStore) StopDuckDB() error {
+	if s.duckProc == nil {
+		return fmt.Errorf("no DuckDB process to stop")
+	}
+	if s.isOffline() {
+		return fmt.Errorf("cannot stop DuckDB for upgrade while server is offline (write cache cannot be flushed to Lance)")
+	}
+	// Flush write cache before stopping
+	s.FlushPendingChanges()
+	return s.duckProc.stopForUpgrade()
+}
+
+func (s *cliStore) StartDuckDB() error {
+	if s.duckProc == nil {
+		return fmt.Errorf("no DuckDB process to start")
+	}
+	return s.duckProc.startAfterUpgrade()
 }
 
 func (s *cliStore) OfflineStatus() *OfflineStatus {
@@ -275,6 +328,11 @@ func (s *cliStore) goOffline(reason error) {
 	if s.offCache.isOffline.CompareAndSwap(false, true) {
 		log.Printf("Switched to offline mode: %v", reason)
 		s.offCache.emitLog("warn", "Switched to offline mode: "+reason.Error())
+		// Wake the health probe so it switches to fast polling immediately.
+		select {
+		case s.probeWake <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -482,20 +540,28 @@ func (s *cliStore) runHealthProbe(ctx context.Context) {
 
 		select {
 		case <-time.After(interval):
-			alive := s.probeLance()
-			if alive && s.isOffline() {
-				s.handleReconnect()
-			}
+		case <-s.probeWake:
+			// goOffline fired; give a brief pause then probe.
+			time.Sleep(2 * time.Second)
 		case <-ctx.Done():
 			return
+		}
+
+		alive := s.probeLance()
+		if alive && s.isOffline() {
+			s.handleReconnect()
 		}
 	}
 }
 
 // probeLance runs a lightweight query to check if Lance is reachable.
 func (s *cliStore) probeLance() bool {
-	_, err := s.lanceQuery("SELECT 1 FROM " + s.lanceTable("feeds") + " LIMIT 1")
-	return err == nil
+	rows, err := s.lanceQuery("SELECT 1 FROM " + s.lanceTable("feeds") + " LIMIT 1")
+	alive := err == nil && len(rows) > 0
+	if !alive {
+		log.Printf("probeLance: alive=%v err=%v rows=%d", alive, err, len(rows))
+	}
+	return alive
 }
 
 // runPendingFlush periodically flushes DuckDB pending_changes to Lance.
@@ -513,16 +579,16 @@ func (s *cliStore) runPendingFlush(ctx context.Context) {
 			if s.isOffline() {
 				continue // don't flush while Lance is unreachable
 			}
-			s.flushPendingChanges()
+			s.FlushPendingChanges()
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-// flushPendingChanges replays buffered writes from DuckDB into Lance.
+// FlushPendingChanges replays buffered writes from DuckDB into Lance.
 // Clears the in-memory writeCache on success.
-func (s *cliStore) flushPendingChanges() {
+func (s *cliStore) FlushPendingChanges() {
 	if s.offCache == nil {
 		return
 	}
@@ -544,7 +610,7 @@ func (s *cliStore) handleReconnect() {
 	}
 
 	// Flush pending writes (same code path as periodic flush)
-	s.flushPendingChanges()
+	s.FlushPendingChanges()
 
 	// Also drain any cached logs accumulated during the outage
 	s.drainCachedLogs(500)
@@ -806,7 +872,8 @@ func (s *cliStore) GetArticles(feedID string, limit, offset int, unreadOnly bool
 		SELECT
 			a.article_id, a.feed_id, a.title, a.url, a.author,
 			a.summary, a.published_at, a.fetched_at,
-			%s AS is_read, %s AS is_starred
+			%s AS is_read, %s AS is_starred,
+			a.created_at, a.updated_at
 		FROM %s a
 		%s
 		WHERE 1=1 %s %s
@@ -1261,9 +1328,20 @@ func (s *cliStore) QueryTable(table string, limit, offset int) (*TableQueryResul
 
 // logTableExists checks if a log lance table directory exists on disk.
 func (s *cliStore) logTableExists(name string) bool {
+	// Cache positive results -- once a log table exists it stays
+	if s.logTableCache[name] {
+		return true
+	}
 	dir := filepath.Join(s.dataPath, name+".lance")
 	info, err := os.Stat(dir)
-	return err == nil && info.IsDir()
+	exists := err == nil && info.IsDir()
+	if exists {
+		if s.logTableCache == nil {
+			s.logTableCache = make(map[string]bool)
+		}
+		s.logTableCache[name] = true
+	}
+	return exists
 }
 
 func (s *cliStore) WriteLog(entry LogEntry) error {

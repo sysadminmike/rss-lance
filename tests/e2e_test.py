@@ -1227,6 +1227,15 @@ def run_e2e(keep: bool = False, verbose: bool = False,
                     and srv["num_cpu"] > 0,
                     f"Got {srv.get('num_cpu')}")
 
+            # Build-time DuckDB/Lance version fields should exist (may be empty
+            # if tools/duckdb was not present at build time)
+            t.check("server.build_duckdb_version is present",
+                    "build_duckdb_version" in srv,
+                    f"Keys: {list(srv.keys())}")
+            t.check("server.build_lance_ext_version is present",
+                    "build_lance_ext_version" in srv,
+                    f"Keys: {list(srv.keys())}")
+
             mem = srv_status.get("memory", {})
             t.check("memory.heap_alloc_bytes > 0",
                     isinstance(mem.get("heap_alloc_bytes"), (int, float))
@@ -1611,6 +1620,10 @@ def run_e2e(keep: bool = False, verbose: bool = False,
                     f"Got {settings.get('log.api.lifecycle')}")
 
         # Now verify the SAME settings in the DB via DuckDB
+        # Flush the write cache first so pending changes are written to Lance
+        status, _ = api.post("/api/flush")
+        t.check("POST /api/flush returns 200", status == 200)
+
         t.log("Verifying settings directly in Lance DB via DuckDB...")
         for key, expected_json in [
             ("log.max_entries", "5000"),
@@ -1653,6 +1666,7 @@ def run_e2e(keep: bool = False, verbose: bool = False,
                     f"Got {settings.get('log.retention_mode')}")
 
         # Verify in DuckDB too
+        api.post("/api/flush")
         mode_rows2 = duckdb_query(data_path,
             f"SELECT value FROM {settings_table} WHERE key = 'log.retention_mode'")
         if mode_rows2:
@@ -1904,6 +1918,167 @@ def run_e2e(keep: bool = False, verbose: bool = False,
                             "No child duckdb.exe found")
             else:
                 t.log("No child duckdb.exe found (may not be Windows build)")
+        else:
+            t.log("Skipping (Windows-only test)")
+
+        # -------- DuckDB Graceful Restart via API (Windows) --------
+        t.section("DuckDB: Graceful Restart via API")
+        if sys.platform == "win32" and server_proc:
+            server_pid = server_proc.pid
+            # Get current DuckDB PID before restart
+            try:
+                wmic_out = subprocess.check_output(
+                    ["wmic", "process", "where",
+                     f"ParentProcessId={server_pid} and Name='duckdb.exe'",
+                     "get", "ProcessId"],
+                    text=True, stderr=subprocess.DEVNULL, timeout=10
+                )
+                pre_pids = [
+                    int(line.strip()) for line in wmic_out.strip().splitlines()
+                    if line.strip().isdigit()
+                ]
+            except Exception:
+                pre_pids = []
+
+            pre_pid = pre_pids[0] if pre_pids else None
+            if pre_pid:
+                t.log(f"DuckDB PID before restart: {pre_pid}")
+
+            # Check server-status has version info
+            ss_status, ss_data = api.get("/api/server-status")
+            t.check("GET /api/server-status returns 200", ss_status == 200)
+            if ss_status == 200 and isinstance(ss_data, dict):
+                duckdb_info = ss_data.get("duckdb_process")
+                if duckdb_info:
+                    t.check("DuckDB version present",
+                            bool(duckdb_info.get("duckdb_version")),
+                            f"Got: {duckdb_info.get('duckdb_version')}")
+                    t.check("Lance extension version present",
+                            bool(duckdb_info.get("lance_version")),
+                            f"Got: {duckdb_info.get('lance_version')}")
+                    t.log(f"DuckDB {duckdb_info.get('duckdb_version')}, Lance ext {duckdb_info.get('lance_version')}")
+
+            # Call graceful restart API
+            restart_status, restart_resp = api.post("/api/duckdb/restart", {})
+            t.check("POST /api/duckdb/restart returns 200",
+                    restart_status == 200, f"Got {restart_status}")
+            if restart_status == 200 and isinstance(restart_resp, dict):
+                t.check("Restart response ok",
+                        restart_resp.get("ok") is True,
+                        f"Got: {restart_resp}")
+
+            # Verify API still works after restart
+            post_status, post_feeds = api.get("/api/feeds")
+            t.check("API works after graceful restart",
+                    post_status == 200, f"Got {post_status}")
+
+            # Verify new PID
+            if pre_pid:
+                try:
+                    wmic_out2 = subprocess.check_output(
+                        ["wmic", "process", "where",
+                         f"ParentProcessId={server_pid} and Name='duckdb.exe'",
+                         "get", "ProcessId"],
+                        text=True, stderr=subprocess.DEVNULL, timeout=10
+                    )
+                    post_pids = [
+                        int(line.strip()) for line in wmic_out2.strip().splitlines()
+                        if line.strip().isdigit()
+                    ]
+                except Exception:
+                    post_pids = []
+
+                if post_pids:
+                    post_pid = post_pids[0]
+                    t.check("DuckDB PID changed after restart",
+                            post_pid != pre_pid,
+                            f"Old={pre_pid}, New={post_pid}")
+                    t.log(f"DuckDB PID after restart: {post_pid}")
+
+            # Verify version info persists after restart
+            ss2_status, ss2_data = api.get("/api/server-status")
+            if ss2_status == 200 and isinstance(ss2_data, dict):
+                duckdb_info2 = ss2_data.get("duckdb_process")
+                if duckdb_info2:
+                    t.check("DuckDB version present after restart",
+                            bool(duckdb_info2.get("duckdb_version")),
+                            f"Got: {duckdb_info2.get('duckdb_version')}")
+                    t.check("Lance ext version present after restart",
+                            bool(duckdb_info2.get("lance_version")),
+                            f"Got: {duckdb_info2.get('lance_version')}")
+        else:
+            t.log("Skipping (Windows-only test)")
+
+        # -------- DuckDB: Stop/Start for Upgrade via API (Windows) --------
+        t.section("DuckDB: Stop/Start Upgrade Flow")
+        if sys.platform == "win32" and server_proc:
+            # Verify DuckDB is running before stop
+            ss_pre, ss_pre_data = api.get("/api/server-status")
+            t.check("GET /api/server-status returns 200 (pre-stop)",
+                    ss_pre == 200)
+            if ss_pre == 200 and isinstance(ss_pre_data, dict):
+                duckdb_pre = ss_pre_data.get("duckdb_process")
+                t.check("DuckDB not stopped before test",
+                        duckdb_pre and not duckdb_pre.get("stopped"),
+                        f"Got: {duckdb_pre}")
+
+            # Stop DuckDB for upgrade (flushes cache + stops process)
+            stop_status, stop_resp = api.post("/api/duckdb/stop", {})
+            t.check("POST /api/duckdb/stop returns 200",
+                    stop_status == 200, f"Got {stop_status}")
+            if stop_status == 200 and isinstance(stop_resp, dict):
+                t.check("Stop response ok",
+                        stop_resp.get("ok") is True,
+                        f"Got: {stop_resp}")
+                t.check("Stop response has message",
+                        "message" in stop_resp,
+                        f"Got: {stop_resp}")
+
+            # Verify server-status shows stopped state
+            ss_stopped, ss_stopped_data = api.get("/api/server-status")
+            t.check("GET /api/server-status returns 200 (while stopped)",
+                    ss_stopped == 200)
+            if ss_stopped == 200 and isinstance(ss_stopped_data, dict):
+                duckdb_stopped = ss_stopped_data.get("duckdb_process")
+                t.check("DuckDB stopped field is true",
+                        duckdb_stopped and duckdb_stopped.get("stopped") is True,
+                        f"Got: {duckdb_stopped}")
+                t.check("DuckDB PID is 0 while stopped",
+                        duckdb_stopped and duckdb_stopped.get("pid") == 0,
+                        f"Got pid: {duckdb_stopped.get('pid') if duckdb_stopped else 'N/A'}")
+
+            # While DuckDB is stopped, queries fall through to offline cache
+            fail_status, _ = api.get("/api/feeds")
+            t.check("API query returns 200 from offline cache while DuckDB stopped",
+                    fail_status == 200, f"Got {fail_status}")
+
+            # Start DuckDB after upgrade
+            start_status, start_resp = api.post("/api/duckdb/start", {})
+            t.check("POST /api/duckdb/start returns 200",
+                    start_status == 200, f"Got {start_status}")
+            if start_status == 200 and isinstance(start_resp, dict):
+                t.check("Start response ok",
+                        start_resp.get("ok") is True,
+                        f"Got: {start_resp}")
+
+            # Verify API works again
+            post_start_status, post_start_feeds = api.get("/api/feeds")
+            t.check("API works after DuckDB start",
+                    post_start_status == 200, f"Got {post_start_status}")
+
+            # Verify server-status shows running again
+            ss_post, ss_post_data = api.get("/api/server-status")
+            if ss_post == 200 and isinstance(ss_post_data, dict):
+                duckdb_post = ss_post_data.get("duckdb_process")
+                t.check("DuckDB not stopped after start",
+                        duckdb_post and not duckdb_post.get("stopped"),
+                        f"Got: {duckdb_post}")
+                t.check("DuckDB PID > 0 after start",
+                        duckdb_post and duckdb_post.get("pid", 0) > 0,
+                        f"Got pid: {duckdb_post.get('pid') if duckdb_post else 'N/A'}")
+                t.check("DuckDB version present after start",
+                        duckdb_post and bool(duckdb_post.get("duckdb_version")),
+                        f"Got: {duckdb_post.get('duckdb_version') if duckdb_post else 'N/A'}")
         else:
             t.log("Skipping (Windows-only test)")
 
@@ -2306,11 +2481,12 @@ def run_e2e(keep: bool = False, verbose: bool = False,
         if server_ready:
             t.check("Server started (offline)", True)
 
-            # Verify offline mode is enabled but not yet offline
+            # Verify offline mode is active but not yet offline
             status, ost = api.get("/api/offline-status")
             t.check("GET /api/offline-status returns 200", status == 200)
             if isinstance(ost, dict):
-                t.check("Offline mode enabled", ost.get("enabled") == True,
+                t.check("Offline mode enabled",
+                        "offline" in ost and "last_snapshot" in ost,
                         f"Got: {ost}")
                 t.check("Not offline yet", ost.get("offline") == False,
                         f"Got: {ost}")
@@ -2426,6 +2602,20 @@ def run_e2e(keep: bool = False, verbose: bool = False,
                         t.check("Server came back online",
                                 came_online,
                                 f"offline-status after 20s: {ost}")
+
+                        if not came_online:
+                            # Dump server log for debugging recovery failure
+                            try:
+                                server_log.flush()
+                                with open(server_log_path) as _lf:
+                                    _log = _lf.read()
+                                # Show last 40 lines of server log
+                                _lines = _log.strip().splitlines()[-40:]
+                                t.log("Server log (last 40 lines):")
+                                for _l in _lines:
+                                    t.log(f"  {_l.rstrip()}")
+                            except Exception as _e:
+                                t.log(f"Could not read server log: {_e}")
 
                         if came_online:
                             # Verify data is accessible again

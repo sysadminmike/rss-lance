@@ -3,11 +3,15 @@
 # RSS-Lance build & setup script for Linux/FreeBSD/macOS
 #
 # Usage:
-#   ./build.sh [-d <dir>] [--no-tests] <command>
+#   ./build.sh [-d <dir>] [--no-tests] [--duckdb-embedded|--duckdb-external] [--lance-embedded|--lance-external] <command>
 #
 # Options:
-#   -d <dir>       Project directory to work in (default: script location)
-#   --no-tests     Skip running tests after build (tests run by default with 'all')
+#   -d <dir>             Project directory to work in (default: script location)
+#   --no-tests           Skip running tests after build (tests run by default with 'all')
+#   --duckdb-embedded    Build only with embedded DuckDB (CGo); fail if compilation fails
+#   --duckdb-external    Build only with external DuckDB CLI process; skip embedded attempt
+#   --lance-embedded     Build only with embedded lancedb-go (native Rust SDK via CGo)
+#   --lance-external     Build with external Lance writer (Python sidecar); no native lib needed
 #
 # Commands:
 #   setup        First-time setup (venv + Go deps)
@@ -35,6 +39,12 @@ SOURCE_ROOT="$SCRIPT_DIR"
 PROJECT_ROOT="$SCRIPT_DIR"
 USING_CUSTOM_DIR=false
 NO_TESTS=false
+FORCE_EMBEDDED=false
+FORCE_EXTERNAL=false
+DUCKDB_EMBEDDED=false
+DUCKDB_EXTERNAL=false
+LANCE_EMBEDDED=false
+LANCE_EXTERNAL=false
 
 # Parse optional flags
 while [[ $# -gt 0 ]]; do
@@ -49,11 +59,45 @@ while [[ $# -gt 0 ]]; do
             NO_TESTS=true
             shift
             ;;
+        --force-embedded|--duckdb-embedded)
+            if [ "$1" = "--force-embedded" ]; then
+                echo "WARNING: --force-embedded is deprecated, use --duckdb-embedded" >&2
+            fi
+            FORCE_EMBEDDED=true
+            DUCKDB_EMBEDDED=true
+            shift
+            ;;
+        --force-external|--duckdb-external)
+            if [ "$1" = "--force-external" ]; then
+                echo "WARNING: --force-external is deprecated, use --duckdb-external" >&2
+            fi
+            FORCE_EXTERNAL=true
+            DUCKDB_EXTERNAL=true
+            shift
+            ;;
+        --lance-embedded)
+            LANCE_EMBEDDED=true
+            shift
+            ;;
+        --lance-external)
+            LANCE_EXTERNAL=true
+            shift
+            ;;
         *)
             break
             ;;
     esac
 done
+
+if [ "$FORCE_EMBEDDED" = true ] && [ "$FORCE_EXTERNAL" = true ]; then
+    echo "ERROR: --duckdb-embedded and --duckdb-external are mutually exclusive" >&2
+    exit 1
+fi
+
+if [ "$LANCE_EMBEDDED" = true ] && [ "$LANCE_EXTERNAL" = true ]; then
+    echo "ERROR: --lance-embedded and --lance-external are mutually exclusive" >&2
+    exit 1
+fi
 
 echo "Source from: $SOURCE_ROOT"
 echo "Working in:  $PROJECT_ROOT"
@@ -173,18 +217,20 @@ cmd_server() {
     mkdir -p "$BUILD_DIR"
     pushd "$SERVER_DIR" > /dev/null
 
-    # Enable CGo for lancedb-go native bindings
+    # Resolve CGo flags for lancedb-go native bindings
+    # CGo is required in both embedded and external mode (for lance_writer.go)
     local arch
     arch=$(uname -m)
     local lib_dir="$SERVER_DIR/lib/linux_${arch}"
     if [ ! -d "$lib_dir" ]; then
-        # Fallback: try linux_amd64 for x86_64
         if [ "$arch" = "x86_64" ]; then
             lib_dir="$SERVER_DIR/lib/linux_amd64"
         fi
     fi
 
+    local cgo_ok=false
     if [ -d "$lib_dir" ] && [ -f "$SERVER_DIR/include/lancedb.h" ]; then
+        cgo_ok=true
         export CGO_ENABLED=1
         export CGO_CFLAGS="-I$SERVER_DIR/include"
         export CGO_LDFLAGS="$lib_dir/liblancedb_go.a -lm -ldl -lpthread"
@@ -202,7 +248,104 @@ cmd_server() {
     if [ -n "${BUILD_VERSION:-}" ]; then
         ldflags="${ldflags} -X main.BuildVersion=${BUILD_VERSION}"
     fi
-    go build -ldflags "$ldflags" -o "$BUILD_DIR/rss-lance-server" .
+
+    # Helper: capture DuckDB CLI + Lance extension versions and append to ldflags
+    _capture_duckdb_versions() {
+        local duck_bin="$TOOLS_DIR/duckdb"
+        if [ ! -f "$duck_bin" ]; then
+            echo "  NOTE: tools/duckdb not found, skipping build-time version capture"
+            return
+        fi
+        local ver_json
+        if ver_json=$("$duck_bin" -json -c "SELECT version() AS v" 2>/dev/null); then
+            local duck_ver
+            duck_ver=$(echo "$ver_json" | grep -o '"v":"[^"]*"' | head -1 | cut -d'"' -f4)
+            if [ -n "$duck_ver" ]; then
+                ldflags="${ldflags} -X main.BuildDuckDBVersion=${duck_ver}"
+                echo "  DuckDB CLI version: $duck_ver"
+            fi
+        else
+            echo "  WARNING: Could not detect DuckDB version"
+        fi
+        local ext_json
+        if ext_json=$("$duck_bin" -json -c "INSTALL lance FROM community; LOAD lance; SELECT extension_version FROM duckdb_extensions() WHERE extension_name='lance' AND loaded=true" 2>/dev/null); then
+            local lance_ver
+            lance_ver=$(echo "$ext_json" | grep -o '"extension_version":"[^"]*"' | head -1 | cut -d'"' -f4)
+            if [ -n "$lance_ver" ]; then
+                ldflags="${ldflags} -X main.BuildLanceExtVersion=${lance_ver}"
+                echo "  Lance extension version: $lance_ver"
+            fi
+        else
+            echo "  WARNING: Could not detect Lance extension version"
+        fi
+    }
+
+    # Helper: build with external DuckDB process mode (-tags duckdb_cli)
+    _build_external() {
+        # Ensure DuckDB CLI binary is available
+        if [ ! -f "$TOOLS_DIR/duckdb" ]; then
+            echo "  Downloading DuckDB CLI for external process mode..."
+            cmd_duckdb
+        fi
+        # Verify the binary works
+        if ! "$TOOLS_DIR/duckdb" -json -c "SELECT 42 AS test_val" >/dev/null 2>&1; then
+            fail "DuckDB CLI binary at tools/duckdb is not working. Try re-downloading: ./build.sh duckdb"
+        fi
+        _capture_duckdb_versions
+        local tags="duckdb_cli"
+        if [ "$LANCE_EXTERNAL" = true ]; then
+            tags="$tags,lance_external"
+        fi
+        echo "  Building with -tags $tags ..."
+        go build -tags "$tags" -ldflags "$ldflags" -o "$BUILD_DIR/rss-lance-server" .
+    }
+
+    # Compute lance build tag suffix (appended to any build command)
+    local lance_tag=""
+    if [ "$LANCE_EXTERNAL" = true ]; then
+        lance_tag="lance_external"
+        echo "  Using external Lance writer (Python sidecar)"
+    fi
+
+    if [ "$FORCE_EXTERNAL" = true ]; then
+        echo "  Building with external DuckDB process (--duckdb-external)"
+        _build_external
+    elif [ "$FORCE_EMBEDDED" = true ]; then
+        echo "  Building with embedded DuckDB (--duckdb-embedded)"
+        _capture_duckdb_versions
+        if [ -n "$lance_tag" ]; then
+            go build -tags "$lance_tag" -ldflags "$ldflags" -o "$BUILD_DIR/rss-lance-server" .
+        else
+            go build -ldflags "$ldflags" -o "$BUILD_DIR/rss-lance-server" .
+        fi
+    else
+        # Default: try embedded, fall back to external on failure
+        _capture_duckdb_versions
+        local build_ok=false
+        if [ -n "$lance_tag" ]; then
+            if go build -tags "$lance_tag" -ldflags "$ldflags" -o "$BUILD_DIR/rss-lance-server" . 2>/dev/null; then
+                build_ok=true
+                echo "  Built with embedded DuckDB + external Lance"
+            fi
+        else
+            if go build -ldflags "$ldflags" -o "$BUILD_DIR/rss-lance-server" . 2>/dev/null; then
+                build_ok=true
+                echo "  Built with embedded DuckDB + embedded Lance (fastest)"
+            fi
+        fi
+        if [ "$build_ok" = false ]; then
+            echo ""
+            echo "  WARNING: Embedded DuckDB compilation failed (CGo/GCC issue)."
+            echo "  Building with external DuckDB process instead."
+            echo "  The server will use tools/duckdb binary at runtime."
+            echo "  To retry embedded: ./build.sh --duckdb-embedded server"
+            echo ""
+            # If CGo failed, also use external Lance (no native lib available)
+            LANCE_EXTERNAL=true
+            _build_external
+        fi
+    fi
+
     popd > /dev/null
     ok "Built: build/rss-lance-server"
 }
@@ -234,16 +377,41 @@ cmd_server_all() {
 
     local lib_dir="$SERVER_DIR/lib/${native_os}_${native_arch}"
     if [ -d "$lib_dir" ] && [ -f "$SERVER_DIR/include/lancedb.h" ]; then
-        CGO_ENABLED=1 \
-        CGO_CFLAGS="-I$SERVER_DIR/include" \
-        CGO_LDFLAGS="$lib_dir/liblancedb_go.a -lm -ldl -lpthread" \
-        GOOS="$native_os" GOARCH="$native_arch" \
+        export CGO_ENABLED=1
+        export CGO_CFLAGS="-I$SERVER_DIR/include"
+        export CGO_LDFLAGS="$lib_dir/liblancedb_go.a -lm -ldl -lpthread"
+
         local build_time
         build_time=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
         local ldflags="-X main.BuildTime=${build_time}"
         if [ -n "${BUILD_VERSION:-}" ]; then
             ldflags="${ldflags} -X main.BuildVersion=${BUILD_VERSION}"
         fi
+
+        # Capture DuckDB CLI + Lance extension versions
+        local duck_bin="$TOOLS_DIR/duckdb"
+        if [ -f "$duck_bin" ]; then
+            local ver_json
+            if ver_json=$("$duck_bin" -json -c "SELECT version() AS v" 2>/dev/null); then
+                local duck_ver
+                duck_ver=$(echo "$ver_json" | grep -o '"v":"[^"]*"' | head -1 | cut -d'"' -f4)
+                if [ -n "$duck_ver" ]; then
+                    ldflags="${ldflags} -X main.BuildDuckDBVersion=${duck_ver}"
+                    echo "  DuckDB CLI version: $duck_ver"
+                fi
+            fi
+            local ext_json
+            if ext_json=$("$duck_bin" -json -c "INSTALL lance FROM community; LOAD lance; SELECT extension_version FROM duckdb_extensions() WHERE extension_name='lance' AND loaded=true" 2>/dev/null); then
+                local lance_ver
+                lance_ver=$(echo "$ext_json" | grep -o '"extension_version":"[^"]*"' | head -1 | cut -d'"' -f4)
+                if [ -n "$lance_ver" ]; then
+                    ldflags="${ldflags} -X main.BuildLanceExtVersion=${lance_ver}"
+                    echo "  Lance extension version: $lance_ver"
+                fi
+            fi
+        fi
+
+        GOOS="$native_os" GOARCH="$native_arch" \
         go build -ldflags "$ldflags" -o "$BUILD_DIR/$native_name" .
     else
         echo "  WARNING: native lib not found at $lib_dir, skipping native CGo build" >&2
@@ -393,11 +561,15 @@ cmd_help() {
 
 RSS-Lance Build Script
 ======================
-Usage: ./build.sh [-d <dir>] [--no-tests] <command>
+Usage: ./build.sh [-d <dir>] [--no-tests] [--duckdb-embedded|--duckdb-external] [--lance-embedded|--lance-external] <command>
 
 Options:
-  -d <dir>       Project directory to work in (default: script location)
-  --no-tests     Skip running tests after build (tests run by default with 'all')
+  -d <dir>             Project directory to work in (default: script location)
+  --no-tests           Skip running tests after build (tests run by default with 'all')
+  --duckdb-embedded    Build only with embedded DuckDB (CGo); fail if compilation fails
+  --duckdb-external    Build only with external DuckDB CLI process; skip embedded attempt
+  --lance-embedded     Build only with embedded lancedb-go (native Rust SDK via CGo)
+  --lance-external     Build with external Lance writer (Python sidecar); no native lib needed
 
 Commands:
   setup        First-time setup (venv + deps + Go check)
@@ -419,10 +591,28 @@ Commands:
                Use --no-tests to skip tests: ./build.sh --no-tests all
   help         Show this help
 
+Build Modes:
+  By default, 'server' tries embedded DuckDB + embedded Lance (fastest) and
+  automatically falls back to external processes if CGo compilation fails.
+
+  DuckDB modes:
+    --duckdb-embedded   Force embedded go-duckdb (CGo); fail if compile fails
+    --duckdb-external   Force external DuckDB CLI process (no CGo for reads)
+
+  Lance writer modes:
+    --lance-embedded    Force embedded lancedb-go (native Rust SDK via CGo)
+    --lance-external    Force Python sidecar (no native lib needed)
+
+  Legacy flags (deprecated):
+    --force-embedded    Alias for --duckdb-embedded
+    --force-external    Alias for --duckdb-external
+
 Examples:
   ./build.sh setup                       # Use script directory
   ./build.sh -d /opt/rss-lance all       # Build in a specific dir
   ./build.sh --no-tests all              # Build without running tests
+  ./build.sh --duckdb-external server     # Force external DuckDB process mode
+  ./build.sh --lance-external server      # Force Python Lance sidecar mode
   ./build.sh test                        # Run tests only
 
 EOF

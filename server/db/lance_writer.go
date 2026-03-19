@@ -1,3 +1,5 @@
+//go:build !lance_external
+
 // lance_writer.go - CUD (Create/Update/Delete) operations via lancedb-go native SDK.
 //
 // DuckDB remains the query engine for all SELECT operations (it handles JOINs,
@@ -29,12 +31,6 @@ import (
 	"github.com/lancedb/lancedb-go/pkg/contracts"
 	"github.com/lancedb/lancedb-go/pkg/lancedb"
 )
-
-// isCloudURI returns true for cloud storage URIs (s3://, gs://, az://).
-func isCloudURI(path string) bool {
-	return len(path) > 5 &&
-		(path[:5] == "s3://" || path[:5] == "gs://" || path[:5] == "az://")
-}
 
 // lanceWriter wraps a native lancedb-go connection for CUD operations.
 // Table handles are opened lazily and cached for reuse.

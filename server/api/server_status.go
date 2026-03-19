@@ -10,12 +10,14 @@ import (
 
 // ServerStatusHandler handles GET /api/server-status
 type ServerStatusHandler struct {
-	startTime       time.Time
-	buildTime       string
-	buildVersion    string
-	cacheStats      func() CacheStatsInfo
-	duckdbProcInfo  func() *DuckDBProcessInfo
-	logBufferStats  func() *LogBufferStatsInfo
+	startTime            time.Time
+	buildTime            string
+	buildVersion         string
+	buildDuckDBVersion   string
+	buildLanceExtVersion string
+	cacheStats           func() CacheStatsInfo
+	duckdbProcInfo       func() *DuckDBProcessInfo
+	logBufferStats       func() *LogBufferStatsInfo
 }
 
 // CacheStatsInfo holds write cache statistics exposed to the status endpoint.
@@ -28,8 +30,11 @@ type CacheStatsInfo struct {
 
 // DuckDBProcessInfo holds info about the external duckdb.exe process.
 type DuckDBProcessInfo struct {
-	PID           int   `json:"pid"`
-	UptimeSeconds int64 `json:"uptime_seconds"`
+	PID           int    `json:"pid"`
+	UptimeSeconds int64  `json:"uptime_seconds"`
+	DuckDBVersion string `json:"duckdb_version,omitempty"`
+	LanceVersion  string `json:"lance_version,omitempty"`
+	Stopped       bool   `json:"stopped"`
 }
 
 // LogBufferStatsInfo holds log buffer resilience statistics.
@@ -39,8 +44,8 @@ type LogBufferStatsInfo struct {
 	InfraEvents   int `json:"infra_events"`
 }
 
-func NewServerStatusHandler(startTime time.Time, buildTime, buildVersion string, cacheStats func() CacheStatsInfo, duckdbProcInfo func() *DuckDBProcessInfo, logBufferStats func() *LogBufferStatsInfo) *ServerStatusHandler {
-	return &ServerStatusHandler{startTime: startTime, buildTime: buildTime, buildVersion: buildVersion, cacheStats: cacheStats, duckdbProcInfo: duckdbProcInfo, logBufferStats: logBufferStats}
+func NewServerStatusHandler(startTime time.Time, buildTime, buildVersion, buildDuckDBVersion, buildLanceExtVersion string, cacheStats func() CacheStatsInfo, duckdbProcInfo func() *DuckDBProcessInfo, logBufferStats func() *LogBufferStatsInfo) *ServerStatusHandler {
+	return &ServerStatusHandler{startTime: startTime, buildTime: buildTime, buildVersion: buildVersion, buildDuckDBVersion: buildDuckDBVersion, buildLanceExtVersion: buildLanceExtVersion, cacheStats: cacheStats, duckdbProcInfo: duckdbProcInfo, logBufferStats: logBufferStats}
 }
 
 func (h *ServerStatusHandler) Handle(w http.ResponseWriter, r *http.Request) {
@@ -116,18 +121,20 @@ func (h *ServerStatusHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	resp := map[string]any{
 		"server": map[string]any{
-			"uptime_seconds":     uptimeSecs,
-			"start_time":         h.startTime.UTC().Format(time.RFC3339),
-			"pid":                pid,
-			"go_version":         goVersion,
-			"os":                 goos,
-			"arch":               goarch,
-			"num_cpu":            numCPU,
-			"goroutines":         goroutines,
-			"build_vcs_revision": vcsRevision,
-			"build_vcs_time":     vcsTime,
-			"build_time":         h.buildTime,
-			"build_version":      h.buildVersion,
+			"uptime_seconds":          uptimeSecs,
+			"start_time":              h.startTime.UTC().Format(time.RFC3339),
+			"pid":                     pid,
+			"go_version":              goVersion,
+			"os":                      goos,
+			"arch":                    goarch,
+			"num_cpu":                 numCPU,
+			"goroutines":              goroutines,
+			"build_vcs_revision":      vcsRevision,
+			"build_vcs_time":          vcsTime,
+			"build_time":              h.buildTime,
+			"build_version":           h.buildVersion,
+			"build_duckdb_version":    h.buildDuckDBVersion,
+			"build_lance_ext_version": h.buildLanceExtVersion,
 		},
 		"host": map[string]any{
 			"uptime_seconds": hostUptimeSecs,

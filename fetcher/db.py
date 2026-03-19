@@ -14,12 +14,28 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 import json
+import re
 import lancedb
 import pyarrow as pa
 
 from config import Config
 
 SCHEMA_VERSION = 3
+
+# Regex for safe IDs: hex UUIDs with optional dashes, or SHA1 hex hashes.
+_SAFE_ID_RE = re.compile(r'^[a-fA-F0-9-]+$')
+
+
+def _escape_filter_value(val: str) -> str:
+    """Escape a string for use in a LanceDB filter expression.
+
+    Validates that the value looks like a safe identifier (hex/UUID) and
+    escapes single quotes as a defense-in-depth measure.
+    """
+    if not _SAFE_ID_RE.match(val):
+        # Allow non-hex IDs (e.g. URLs used as GUIDs) but escape quotes
+        return val.replace("'", "''")
+    return val
 
 # All timestamps are stored as UTC without timezone annotation.
 _TS = pa.timestamp("us")
@@ -336,7 +352,7 @@ class DB:
         # 2. Apply feed metadata updates (these are row-level updates,
         #    but at least we've deferred them to the end of the cycle)
         for feed_id, updates in self._feed_updates:
-            self.feeds.update(f"feed_id = '{feed_id}'", updates)
+            self.feeds.update(f"feed_id = '{_escape_filter_value(feed_id)}'", updates)
 
         self._article_batch.clear()
         self._feed_updates.clear()
@@ -419,7 +435,7 @@ class DB:
         if self._batching:
             self._feed_updates.append((feed_id, updates))
             return
-        self.feeds.update(f"feed_id = '{feed_id}'", updates)
+        self.feeds.update(f"feed_id = '{_escape_filter_value(feed_id)}'", updates)
 
     # ── articles ─────────────────────────────────────────────────────────
 
@@ -439,12 +455,12 @@ class DB:
         return len(rows)
 
     def mark_article_read(self, article_id: str) -> None:
-        self.articles.update(f"article_id = '{article_id}'", {
+        self.articles.update(f"article_id = '{_escape_filter_value(article_id)}'", {
             "is_read": True, "updated_at": _utcnow(),
         })
 
     def mark_article_starred(self, article_id: str, starred: bool = True) -> None:
-        self.articles.update(f"article_id = '{article_id}'", {
+        self.articles.update(f"article_id = '{_escape_filter_value(article_id)}'", {
             "is_starred": starred, "updated_at": _utcnow(),
         })
 

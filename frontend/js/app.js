@@ -125,6 +125,20 @@ btnModalAdd.addEventListener('click', async () => {
   const url = inputFeedUrl.value.trim();
   if (!url) { modalStatus.textContent = 'Please enter a URL.'; modalStatus.className = 'error'; return; }
 
+  // Validate URL format and scheme
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      modalStatus.textContent = 'Only http and https URLs are supported.';
+      modalStatus.className = 'error';
+      return;
+    }
+  } catch (_) {
+    modalStatus.textContent = 'Please enter a valid URL.';
+    modalStatus.className = 'error';
+    return;
+  }
+
   btnModalAdd.disabled = true;
   modalStatus.textContent = 'Queuing…';
   modalStatus.className = '';
@@ -138,7 +152,8 @@ btnModalAdd.addEventListener('click', async () => {
     modalStatus.className = 'success';
     setTimeout(() => { hideModal(); loadFeeds(); }, 1500);
   } catch (e) {
-    modalStatus.textContent = `Error: ${e.message}`;
+    console.error('Add feed error:', e);
+    modalStatus.textContent = 'Failed to add feed. Please check the URL and try again.';
     modalStatus.className = 'error';
   } finally {
     btnModalAdd.disabled = false;

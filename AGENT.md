@@ -128,6 +128,27 @@ This requires a pre-built native static library linked via CGo.
   CGO_LDFLAGS=<server>/lib/linux_amd64/liblancedb_go.a -lm -ldl -lpthread
   ```
 
+### DuckDB Build Modes and Build Tags
+
+The server has two DuckDB integration modes controlled by Go build tags:
+
+| Mode | Build Tag | Files Used | Description |
+|---|---|---|---|
+| **Embedded** (default on Linux/macOS) | _(none)_ | `lance_cgo.go` | DuckDB compiled into binary via `go-duckdb` CGo package. Fastest. |
+| **External CLI** (default on Windows) | `duckdb_cli` or Windows OS | `lance_windows.go` + `duckdb_process.go` | DuckDB runs as a separate subprocess. Used when embedded CGo compilation fails. |
+
+Build tag rules for the key files:
+
+| File | Build Constraint | Active When |
+|---|---|---|
+| `lance_cgo.go` | `!windows && !duckdb_cli` | Linux/macOS without `duckdb_cli` tag |
+| `lance_windows.go` | `windows \|\| duckdb_cli` | Windows always, or any OS with `-tags duckdb_cli` |
+| `duckdb_process.go` | `windows \|\| duckdb_cli` | Same as `lance_windows.go` |
+
+CGo is required in **both** modes because `lance_writer.go` (shared write path) uses `lancedb-go` which links against `liblancedb_go.a`. The `duckdb_cli` tag only excludes the embedded `go-duckdb` package (DuckDB engine), not the lancedb-go native library.
+
+On Linux/macOS, `build.sh server` tries embedded mode first, then falls back to external mode automatically. Use `--force-embedded` or `--force-external` to override. See `docs/building.md` for details.
+
 ### Rebuilding the Native Library from Rust Source
 
 > **Rarely needed.** Only rebuild if modifying the Rust/C FFI layer or if the pre-built `.a` is missing.
@@ -323,9 +344,9 @@ rss-lance/
 |   |   |-- offline_cache.go # DuckDB pending_changes buffer + offline snapshot cache
 |   |   |-- logbuffer.go    # Buffered log writer (batch flush)
 |   |   |-- lance_writer.go # Shared CUD via lancedb-go native SDK (flush target)
-|   |   |-- duckdb_process.go # Persistent duckdb.exe subprocess (Windows only)
-|   |   |-- lance_windows.go # Windows: DuckDB CLI reads + buffered write path
-|   |   +-- lance_cgo.go    # Non-Windows (Linux/FreeBSD/macOS): embedded DuckDB reads + buffered write path
+|   |   |-- duckdb_process.go # Persistent DuckDB subprocess (Windows + duckdb_cli build tag)
+|   |   |-- lance_windows.go # DuckDB CLI reads + buffered write path (Windows + duckdb_cli build tag)
+|   |   +-- lance_cgo.go    # Embedded DuckDB reads + buffered write path (non-Windows, excluded by duckdb_cli tag)
 |   |-- debug/          # Debug logging & HTTP middleware
 |   |-- include/        # lancedb.h C header for CGo FFI
 |   |-- lib/            # Pre-built native libraries (per-platform)
@@ -516,18 +537,24 @@ All application state - feeds, articles, categories, read/starred status - is st
 
 ---
 
+## Security Hardening
+
+Defence-in-depth measures applied across all layers.
+
+---
+
 ## Important Notes
 
 - **Execution policy (Windows):** PowerShell may block `.ps1` scripts. Run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` first.
 - **LanceDB tables** live in `data/` by default (configurable to S3 in `config.toml`). 7 tables: articles, feeds, categories, pending_feeds, settings, log_api, log_fetcher.
 - **DuckDB database file** (`server.duckdb`) lives in the data path by default. When data is on NFS/S3, set `duckdb_path` in `config.toml` to a local directory -- DuckDB requires local storage for reliable file locking. The server warns at startup if the DuckDB path is on a non-local filesystem.
-- **DuckDB version** 1.5.0 (downloaded by `build.ps1 duckdb` into `tools/`).
+- **DuckDB version** 1.5.0 (downloaded by `build.ps1 duckdb` / `build.sh duckdb` into `tools/`).
 - **DuckDB Lance extension** cannot handle `UPDATE ... WHERE id IN (...)` (fails with "Lance UPDATE does not support UPDATE with joins or FROM") - this is why the Go server uses lancedb-go for writes.
-- **DuckDB file locking on Windows:** DuckDB uses exclusive file locks on Windows, so only **one** DuckDB process can open the Lance data directory at a time. The persistent DuckDB process (see below) uses a **single** long-lived `duckdb.exe :memory: -json` process with queries serialized through it via stdin/stdout. Two-phase startup: (1) one-shot INSTALL to cache the extension, (2) persistent process with LOAD lance + ATTACH + verification query. The process auto-restarts if it dies (crash, OOM, user kill) -- detects broken pipe on write or EOF on read, kills old process, re-runs Phase 2, retries the failed query once. Go unit tests cover kill-and-restart scenarios. All process death/restart events are logged at ERROR level via `log.Printf("ERROR: ...")`.
+- **DuckDB file locking on Windows:** DuckDB uses exclusive file locks on Windows, so only **one** DuckDB process can open the Lance data directory at a time. The persistent DuckDB process (see below) uses a **single** long-lived `duckdb :memory: -json` process with queries serialized through it via stdin/stdout. Two-phase startup: (1) one-shot INSTALL to cache the extension, (2) persistent process with LOAD lance + ATTACH + verification query. The process auto-restarts if it dies (crash, OOM, user kill) -- detects broken pipe on write or EOF on read, kills old process, re-runs Phase 2, retries the failed query once. Go unit tests cover kill-and-restart scenarios. All process death/restart events are logged at ERROR level via `log.Printf("ERROR: ...")`.
 
-### WARNING: DuckDB Persistent Process Gotchas (Windows)
+### WARNING: DuckDB Persistent Process Gotchas
 
-The persistent `duckdb.exe` process (`server/db/duckdb_process.go`) communicates via stdin/stdout using a sentinel-based protocol. There are subtle bugs that can cause 30-second timeouts or protocol desync. **Read all of these before modifying the DuckDB process code:**
+The persistent DuckDB process (`server/db/duckdb_process.go`, active on Windows and when built with `-tags duckdb_cli`) communicates via stdin/stdout using a sentinel-based protocol. There are subtle bugs that can cause 30-second timeouts or protocol desync. **Read all of these before modifying the DuckDB process code:**
 
 1. **Semicolons are REQUIRED.** DuckDB interactive mode will NOT execute a statement until it sees a terminating `;`. The `sendAndRead()` method auto-appends one if missing, but any code that constructs SQL fed to this process must be aware. Without the semicolon, DuckDB silently waits for more input, the reader goroutine blocks, and the query times out after 30s.
 
@@ -600,11 +627,14 @@ Run via `run.ps1 benchmark <mode>` / `run.sh benchmark <mode>`.
 | GET | `/api/settings/:key` | Get single setting |
 | PUT | `/api/settings/:key` | Set single setting |
 | GET | `/api/status` | DB diagnostics (table sizes, row counts) |
-| GET | `/api/server-status` | Go runtime stats (memory, GC, goroutines, uptime, write cache) |
+| GET | `/api/server-status` | Go runtime stats (memory, GC, goroutines, uptime, write cache, DuckDB version info) |
 | GET | `/api/server-status/history` | Time-series metrics (5s samples, 60min retention) |
 | GET | `/api/logs` | Combined logs with filters (?service, ?level, ?category, ?limit, ?offset) |
 | GET | `/api/tables/:name` | Raw table browser (articles, feeds, categories, pending_feeds, settings, log_api, log_fetcher) |
 | GET | `/api/config` | Public runtime config (show_shutdown flag) |
+| POST | `/api/duckdb/restart` | Graceful DuckDB restart (waits for running queries, refreshes version info) |
+| POST | `/api/duckdb/stop` | Flush cache and stop DuckDB for binary upgrade (suppresses auto-restart) |
+| POST | `/api/duckdb/start` | Start DuckDB after binary upgrade (clears upgrade-stop flag) |
 | POST | `/api/shutdown` | Graceful shutdown (only when show_shutdown=true in config.toml) |
 | GET | `/css/custom.css` | Serves custom CSS from settings |
 

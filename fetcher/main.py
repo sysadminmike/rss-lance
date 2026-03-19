@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 import schedule
 
 from config import Config
-from db import DB
+from db import DB, _escape_filter_value
 from feed_parser import fetch_feed
 from content_cleaner import strip_site_chrome
 
@@ -193,7 +193,7 @@ def fetch_one(feed: dict, db: DB, config: Config,
         if db._batching:
             db._feed_updates.append((feed_id, {"fetch_interval_mins": new_interval}))
         else:
-            db.feeds.update(f"feed_id = '{feed_id}'", {"fetch_interval_mins": new_interval})
+            db.feeds.update(f"feed_id = '{_escape_filter_value(feed_id)}'", {"fetch_interval_mins": new_interval})
     else:
         db.update_feed_after_fetch(
             feed_id,
@@ -211,7 +211,7 @@ def fetch_one(feed: dict, db: DB, config: Config,
                 "icon_url": result.icon_url,
             }))
         else:
-            db.feeds.update(f"feed_id = '{feed_id}'", {
+            db.feeds.update(f"feed_id = '{_escape_filter_value(feed_id)}'", {
                 "title": result.title,
                 "site_url": result.site_url,
                 "icon_url": result.icon_url,
@@ -292,7 +292,7 @@ def add_feed(url: str, db: DB, config: Config) -> None:
         title=result.title,
         site_url=result.site_url,
     )
-    db.feeds.update(f"feed_id = '{feed_id}'", {"icon_url": result.icon_url})
+    db.feeds.update(f"feed_id = '{_escape_filter_value(feed_id)}'", {"icon_url": result.icon_url})
 
     # Now store articles
     if not result.error:
@@ -314,10 +314,12 @@ def _get_git_info() -> tuple[str, str]:
         rev = subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=repo_dir, stderr=subprocess.DEVNULL, text=True,
+            timeout=30,
         ).strip()
         ts = subprocess.check_output(
             ["git", "log", "-1", "--format=%cI"],
             cwd=repo_dir, stderr=subprocess.DEVNULL, text=True,
+            timeout=30,
         ).strip()
         return rev, ts
     except Exception:

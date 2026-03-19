@@ -75,7 +75,15 @@ Applies fast regex replacements before DOM parsing:
 | `<iframe …>` | Opening tag removed |
 | `on*="…"` event handlers | Attribute removed |
 | Social sharing `<a>` tags | Removed (same domain list as Python) |
+### DOM-based XSS Sanitiser
 
+After the regex pass, a full DOM-based sanitiser (`_domSanitise()`) parses the HTML into a `<template>` element and walks the entire tree:
+
+1. **Dangerous elements removed entirely:** `<script>`, `<style>`, `<iframe>`, `<object>`, `<embed>`, `<applet>`, `<form>`, `<base>`, `<meta>`, `<link>`, `<svg>`
+2. **Event handler attributes stripped:** all attributes starting with `on` (onclick, onerror, onload, onmouseover, etc.)
+3. **Dangerous URI schemes stripped:** `javascript:`, `data:`, `vbscript:` in `href`, `src`, `action`, `formaction`, `xlink:href`
+
+This provides defence-in-depth against stored XSS -- even if a malicious payload bypasses the regex pass, the DOM pass catches it.
 ### Social Container Removal (DOM)
 
 After regex cleaning, a DOM-based pass removes entire social/sharing **containers** - not just individual links:
@@ -98,6 +106,22 @@ Mirrors the Python-side tracking parameter stripping as a defence-in-depth measu
 ### Cleanup
 
 After all passes, empty elements (empty `<p>`, `<div>`, `<span>`, `<ul>`, etc.) are removed and runs of 3+ `<br>` tags are collapsed to a single line break.
+
+## Content Security Policy
+
+The frontend includes a `<meta>` CSP tag in `frontend/index.html` that restricts resource loading:
+
+- `default-src 'self'` -- only load scripts/fonts/etc. from the same origin
+- `style-src 'self' 'unsafe-inline'` -- allow inline styles (needed for dynamic theming)
+- `img-src * data:` -- allow images from any origin (RSS feeds embed external images)
+- `media-src *` -- allow audio/video from any origin
+- `connect-src 'self'` -- XHR/fetch only to the same origin (the API)
+
+This prevents any injected `<script>` from loading external resources or exfiltrating data, even if it bypasses both sanitiser layers.
+
+## Non-Content Display
+
+Pages that display server metadata (DB status, server status, logs) use `textContent` or an `_escapeHTML()` helper that creates a text node and reads its HTML-escaped value. This prevents XSS from unexpected data_path values, table names, or log messages. These pages never use `innerHTML` for server-provided strings.
 
 ## What's Safe
 
