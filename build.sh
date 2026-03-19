@@ -348,6 +348,18 @@ cmd_server() {
 
     popd > /dev/null
     ok "Built: build/rss-lance-server"
+
+    # Copy lance_writer.py to build/tools/ so the binary can find it at runtime
+    if [ "$LANCE_EXTERNAL" = true ]; then
+        mkdir -p "$BUILD_DIR/tools"
+        local lw_src="$PROJECT_ROOT/tools/lance_writer.py"
+        if [ -f "$lw_src" ]; then
+            cp -f "$lw_src" "$BUILD_DIR/tools/lance_writer.py"
+            echo "  Copied tools/lance_writer.py to build/tools/"
+        else
+            echo "  WARNING: tools/lance_writer.py not found" >&2
+        fi
+    fi
 }
 
 cmd_server_all() {

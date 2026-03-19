@@ -153,6 +153,7 @@ function renderPage(container, data, offlineData = {}) {
   const gc = data.gc || {};
   const cache = data.write_cache || {};
   const duckdb = data.duckdb_process || null;
+  const lance = data.lance_writer || null;
 
   const refreshLabel = `Auto-refresh: ${_refreshIntervalMs / 1000}s`;
 
@@ -167,6 +168,9 @@ function renderPage(container, data, offlineData = {}) {
       ${duckdb ? statCard('DuckDB Up', formatDuration(duckdb.uptime_seconds), '\uD83E\uDD86') : ''}
       ${duckdb && duckdb.duckdb_version ? statCard('DuckDB', duckdb.duckdb_version, '\uD83D\uDCE6') : ''}
       ${duckdb && duckdb.lance_version ? statCard('Lance Ext', duckdb.lance_version, '\uD83D\uDD31') : ''}
+      ${lance ? statCard('Lance Writer', lance.mode === 'external' ? 'External' : 'Embedded', '\uD83D\uDD31') : ''}
+      ${lance && lance.mode === 'external' ? statCard('Lance Up', formatDuration(lance.uptime_seconds), '\uD83D\uDD31') : ''}
+      ${lance && lance.lancedb_version ? statCard('LanceDB', lance.lancedb_version, '\uD83D\uDCE6') : ''}
       ${(() => {
         const offline = offlineData.offline;
         const label = 'Lance Tables';
@@ -276,6 +280,30 @@ function renderPage(container, data, offlineData = {}) {
     </div>
     ` : ''}
 
+    ${lance && lance.mode === 'external' ? `
+    <div class="status-section">
+      <h2>Lance Writer (Python Sidecar)</h2>
+      <div class="cache-stats">
+        <div class="cache-stat">
+          <span class="cache-stat-value">${lance.pid || 'N/A'}</span>
+          <span class="cache-stat-label">PID</span>
+        </div>
+        <div class="cache-stat">
+          <span class="cache-stat-value">${formatDuration(lance.uptime_seconds)}</span>
+          <span class="cache-stat-label">Uptime</span>
+        </div>
+        <div class="cache-stat">
+          <span class="cache-stat-value">${lance.lancedb_version || 'N/A'}</span>
+          <span class="cache-stat-label">LanceDB Version</span>
+        </div>
+        <div class="cache-stat">
+          <span class="cache-stat-value">${lance.pyarrow_version || 'N/A'}</span>
+          <span class="cache-stat-label">PyArrow Version</span>
+        </div>
+      </div>
+    </div>
+    ` : ''}
+
     <div class="status-section">
       <h2>Server Info</h2>
       <table class="status-table">
@@ -285,6 +313,9 @@ function renderPage(container, data, offlineData = {}) {
           ${duckdb && duckdb.stopped ? `<tr><td>DuckDB Status</td><td>Stopped for upgrade</td></tr>` : ''}
           ${duckdb && duckdb.duckdb_version ? `<tr><td>DuckDB Version</td><td>${duckdb.duckdb_version}</td></tr>` : ''}
           ${duckdb && duckdb.lance_version ? `<tr><td>Lance Extension</td><td>${duckdb.lance_version}</td></tr>` : ''}
+          ${lance ? `<tr><td>Lance Writer</td><td>${lance.mode}${lance.pid ? ' (PID ' + lance.pid + ')' : ''}</td></tr>` : ''}
+          ${lance && lance.lancedb_version ? `<tr><td>LanceDB Version</td><td>${lance.lancedb_version}</td></tr>` : ''}
+          ${lance && lance.pyarrow_version ? `<tr><td>PyArrow Version</td><td>${lance.pyarrow_version}</td></tr>` : ''}
           <tr><td>Go Version</td><td>${srv.go_version}</td></tr>
           <tr><td>OS / Arch</td><td>${srv.os} / ${srv.arch}</td></tr>
           <tr><td>CPUs</td><td>${srv.num_cpu}</td></tr>

@@ -17,6 +17,7 @@ type ServerStatusHandler struct {
 	buildLanceExtVersion string
 	cacheStats           func() CacheStatsInfo
 	duckdbProcInfo       func() *DuckDBProcessInfo
+	lanceWriterInfo      func() *LanceWriterProcessInfo
 	logBufferStats       func() *LogBufferStatsInfo
 }
 
@@ -37,6 +38,15 @@ type DuckDBProcessInfo struct {
 	Stopped       bool   `json:"stopped"`
 }
 
+// LanceWriterProcessInfo holds info about the Lance writer (embedded or external Python sidecar).
+type LanceWriterProcessInfo struct {
+	PID            int    `json:"pid,omitempty"`
+	UptimeSeconds  int64  `json:"uptime_seconds,omitempty"`
+	LanceDBVersion string `json:"lancedb_version,omitempty"`
+	PyArrowVersion string `json:"pyarrow_version,omitempty"`
+	Mode           string `json:"mode"` // "embedded" or "external"
+}
+
 // LogBufferStatsInfo holds log buffer resilience statistics.
 type LogBufferStatsInfo struct {
 	MemoryEntries int `json:"memory_entries"`
@@ -44,8 +54,8 @@ type LogBufferStatsInfo struct {
 	InfraEvents   int `json:"infra_events"`
 }
 
-func NewServerStatusHandler(startTime time.Time, buildTime, buildVersion, buildDuckDBVersion, buildLanceExtVersion string, cacheStats func() CacheStatsInfo, duckdbProcInfo func() *DuckDBProcessInfo, logBufferStats func() *LogBufferStatsInfo) *ServerStatusHandler {
-	return &ServerStatusHandler{startTime: startTime, buildTime: buildTime, buildVersion: buildVersion, buildDuckDBVersion: buildDuckDBVersion, buildLanceExtVersion: buildLanceExtVersion, cacheStats: cacheStats, duckdbProcInfo: duckdbProcInfo, logBufferStats: logBufferStats}
+func NewServerStatusHandler(startTime time.Time, buildTime, buildVersion, buildDuckDBVersion, buildLanceExtVersion string, cacheStats func() CacheStatsInfo, duckdbProcInfo func() *DuckDBProcessInfo, lanceWriterInfo func() *LanceWriterProcessInfo, logBufferStats func() *LogBufferStatsInfo) *ServerStatusHandler {
+	return &ServerStatusHandler{startTime: startTime, buildTime: buildTime, buildVersion: buildVersion, buildDuckDBVersion: buildDuckDBVersion, buildLanceExtVersion: buildLanceExtVersion, cacheStats: cacheStats, duckdbProcInfo: duckdbProcInfo, lanceWriterInfo: lanceWriterInfo, logBufferStats: logBufferStats}
 }
 
 func (h *ServerStatusHandler) Handle(w http.ResponseWriter, r *http.Request) {
@@ -119,6 +129,12 @@ func (h *ServerStatusHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		logBuffer = h.logBufferStats()
 	}
 
+	// Lance writer info (embedded or external Python sidecar)
+	var lanceWriter *LanceWriterProcessInfo
+	if h.lanceWriterInfo != nil {
+		lanceWriter = h.lanceWriterInfo()
+	}
+
 	resp := map[string]any{
 		"server": map[string]any{
 			"uptime_seconds":          uptimeSecs,
@@ -163,6 +179,7 @@ func (h *ServerStatusHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		},
 		"write_cache": cache,
 		"duckdb_process": duckdbProc,
+		"lance_writer": lanceWriter,
 		"log_buffer": logBuffer,
 	}
 

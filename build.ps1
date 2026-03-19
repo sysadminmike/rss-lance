@@ -114,6 +114,15 @@ function Copy-RuntimeFiles {
         }
     }
     Write-Host "  Copied run.ps1 / run.sh"
+
+    # tools/lance_writer.py (Python sidecar for Lance writes)
+    $srcLanceWriter = Join-Path (Join-Path $SourceRoot "tools") "lance_writer.py"
+    if (Test-Path $srcLanceWriter) {
+        $destTools = Join-Path $ProjectRoot "tools"
+        New-Item -ItemType Directory -Force -Path $destTools | Out-Null
+        Copy-Item -Path $srcLanceWriter -Destination $destTools -Force
+        Write-Host "  Copied tools/lance_writer.py"
+    }
 }
 
 function Ensure-Venv {
@@ -219,16 +228,33 @@ function Ensure-Gcc {
 
 function Build-Server {
     Write-Step "Building Go server (Windows)"
-    Ensure-Gcc
     New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
     Push-Location $ServerDir
 
-    # Enable CGo and point at lancedb-go native library
-    # -static ensures MinGW runtime (libwinpthread, libgcc) is linked into the
-    # binary so it runs standalone without needing MSYS2 DLLs on PATH.
-    $env:CGO_ENABLED = "1"
-    $env:CGO_CFLAGS  = "-I$ServerDir\include"
-    $env:CGO_LDFLAGS = "-static $ServerDir\lib\windows_amd64\liblancedb_go.a -lws2_32 -luserenv -lntdll -lpthread"
+    # Determine Lance write mode.
+    # Default on Windows: external (Python sidecar) -- no GCC needed.
+    # Opt-in to embedded native lancedb-go via -LanceEmbedded (needs MSYS2 GCC).
+    $useLanceExternal = (-not $LanceEmbedded)
+    if ($LanceExternal) { $useLanceExternal = $true }
+
+    # Build tags -- Windows always uses duckdb_cli (DuckDB CLI process)
+    $tags = @()
+    if ($useLanceExternal) {
+        $tags += "lance_external"
+        Write-Host "  Lance mode: external (Python sidecar)" -ForegroundColor Cyan
+    } else {
+        Write-Host "  Lance mode: embedded (lancedb-go native)" -ForegroundColor Cyan
+    }
+
+    if (-not $useLanceExternal) {
+        # CGo needed for embedded lancedb-go
+        Ensure-Gcc
+        $env:CGO_ENABLED = "1"
+        $env:CGO_CFLAGS  = "-I$ServerDir\include"
+        # -static ensures MinGW runtime (libwinpthread, libgcc) is linked into the
+        # binary so it runs standalone without needing MSYS2 DLLs on PATH.
+        $env:CGO_LDFLAGS = "-static $ServerDir\lib\windows_amd64\liblancedb_go.a -lws2_32 -luserenv -lntdll -lpthread"
+    }
 
     $buildTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     $ldflags = "-X main.BuildTime=$buildTime"
@@ -263,7 +289,12 @@ function Build-Server {
         Write-Host "  NOTE: tools\duckdb.exe not found, skipping build-time version capture" -ForegroundColor Yellow
     }
 
-    go build -ldflags "$ldflags" -o "$BuildDir\rss-lance-server.exe" .
+    $tagsArg = ($tags -join ",")
+    if ($tagsArg) {
+        go build -tags "$tagsArg" -ldflags "$ldflags" -o "$BuildDir\rss-lance-server.exe" .
+    } else {
+        go build -ldflags "$ldflags" -o "$BuildDir\rss-lance-server.exe" .
+    }
 
     # Reset CGo env
     Remove-Item Env:\CGO_ENABLED -ErrorAction SilentlyContinue
@@ -272,6 +303,19 @@ function Build-Server {
 
     Pop-Location
     Write-Host "Built: build\rss-lance-server.exe" -ForegroundColor Green
+
+    # Copy lance_writer.py to build/tools/ so the binary can find it at runtime
+    if ($useLanceExternal) {
+        $toolsDest = Join-Path $BuildDir "tools"
+        New-Item -ItemType Directory -Force -Path $toolsDest | Out-Null
+        $lwSrc = Join-Path (Join-Path $SourceRoot "tools") "lance_writer.py"
+        if (Test-Path $lwSrc) {
+            Copy-Item -Path $lwSrc -Destination $toolsDest -Force
+            Write-Host "  Copied tools/lance_writer.py to build/tools/" -ForegroundColor DarkGray
+        } else {
+            Write-Host "  WARNING: tools/lance_writer.py not found" -ForegroundColor Yellow
+        }
+    }
 }
 
 function Build-ServerAll {
@@ -469,13 +513,18 @@ function Build-Release {
     Copy-Item "$BuildDir\rss-lance-server.exe" $StagingDir
     Write-Host "  Copied rss-lance-server.exe" -ForegroundColor DarkGray
 
-    # Copy DuckDB CLI
+    # Copy DuckDB CLI and lance_writer.py
+    $toolsDest = Join-Path $StagingDir "tools"
+    New-Item -ItemType Directory -Force -Path $toolsDest | Out-Null
     $duckSrc = Join-Path $ToolsDir "duckdb.exe"
     if (Test-Path $duckSrc) {
-        $toolsDest = Join-Path $StagingDir "tools"
-        New-Item -ItemType Directory -Force -Path $toolsDest | Out-Null
         Copy-Item $duckSrc $toolsDest
         Write-Host "  Copied tools/duckdb.exe" -ForegroundColor DarkGray
+    }
+    $lwSrc = Join-Path (Join-Path $SourceRoot "tools") "lance_writer.py"
+    if (Test-Path $lwSrc) {
+        Copy-Item -Path $lwSrc -Destination $toolsDest -Force
+        Write-Host "  Copied tools/lance_writer.py" -ForegroundColor DarkGray
     }
 
     # Copy frontend

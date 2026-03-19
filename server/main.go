@@ -151,6 +151,18 @@ func main() {
 			LanceVersion:  info.LanceVersion,
 			Stopped:       info.Stopped,
 		}
+	}, func() *api.LanceWriterProcessInfo {
+		info := store.LanceWriterInfo()
+		if info == nil {
+			return nil
+		}
+		return &api.LanceWriterProcessInfo{
+			PID:            info.PID,
+			UptimeSeconds:  info.UptimeSeconds,
+			LanceDBVersion: info.LanceDBVersion,
+			PyArrowVersion: info.PyArrowVersion,
+			Mode:           info.Mode,
+		}
 	}, func() *api.LogBufferStatsInfo {
 		st := store.LogBufferStats()
 		return &api.LogBufferStatsInfo{

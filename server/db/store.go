@@ -64,6 +64,9 @@ type Store interface {
 	// DuckDB external process info (Windows only; returns nil on CGo platforms)
 	DuckDBProcessInfo() *DuckDBProcessInfo
 
+	// Lance writer process info (external mode only; returns nil when embedded)
+	LanceWriterInfo() *LanceProcessInfo
+
 	// RestartDuckDB gracefully restarts the DuckDB process (waits for running query)
 	RestartDuckDB() error
 
