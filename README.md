@@ -54,7 +54,12 @@ The **Python fetcher** (writer) and the **Go server** (reader/writer) are comple
 
 When your data lives on S3 or Cloudflare R2, you inherit the cloud provider's authentication and security model. There's no application-level auth to configure, no passwords to manage, no ports to firewall. Access control is handled entirely by IAM policies, bucket permissions, and pre-signed URLs - the same battle-tested infrastructure that secures everything else on AWS/Cloudflare.
 
-See [docs/s3.md](docs/s3.md) for cloud storage setup and [docs/database.md](docs/database.md#cloud-security) for details on the security model.
+This means you can:
+
+- **Run everything on one machine** - fetcher and server side by side, Lance files in `./data`
+- **Split across machines** - fetcher on a Linux server, server on your Windows laptop, Lance files on a network share (Samba/NFS)
+- **Put data on S3/R2** - fetcher as an AWS Lambda, server on a Raspberry Pi, Lance files on S3 - secured by IAM, not by your app
+- **Back up by copying files** - `rsync`, Syncthing, or just `cp -r data/ /backup/` - no database dumps, no export tools
 
 ### Backup with rsync / Syncthing / cp
 
@@ -128,10 +133,10 @@ Open **http://127.0.0.1:8080**.
 
 The `all` command sets up the Python venv, downloads DuckDB, builds the Go server, and inserts demo feeds. After `fetch-once` populates articles, the server is ready to use.
 
-> **Minimal build:** If you just want the bare minimum to run the app (no tests, no demo data, no Node.js), use `build-minimum` instead of `all`:
+> **Minimal build:** If you just want the bare minimum to run the app (no tests, no demo data, no Node.js), use `minimum` instead of `all`:
 > ```powershell
-> .\build.ps1 build-minimum   # Windows
-> ./build.sh build-minimum    # Linux / macOS
+> .\build.ps1 minimum   # Windows
+> ./build.sh minimum    # Linux / macOS
 > ```
 > This runs only setup → duckdb → server. You can add feeds later from the UI or command line.
 
@@ -170,7 +175,7 @@ This defence-in-depth approach means that even if one layer is bypassed, the oth
 
 ### Offline Mode
 
-If the Lance data source becomes unreachable (NFS share unmounted, S3 outage, network drop), the server automatically falls back to a local DuckDB cache. Reads are served from the cache, writes are queued locally, and everything replays back to Lance when the connection returns. Enable it from **Settings → Offline Mode** in the browser. See [docs/offline.md](docs/offline.md) for details.
+If the Lance data source becomes unreachable (NFS share unmounted, S3 outage, network drop), the server automatically falls back to a local DuckDB cache. All writes are buffered through DuckDB first and flushed to Lance in the background, so reads always reflect the latest state. When the connection returns, any remaining queued changes are replayed. The local cache is always active -- no manual toggle needed. See [docs/offline.md](docs/offline.md) for details.
 
 ### DB Table Viewer
 

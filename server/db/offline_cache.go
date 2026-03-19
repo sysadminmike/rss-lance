@@ -16,7 +16,6 @@ import (
 
 // OfflineConfig holds offline-mode settings read from the settings table.
 type OfflineConfig struct {
-	Enabled              bool
 	SnapshotIntervalMins int
 	ArticleDays          int
 	CachePath            string
@@ -25,7 +24,6 @@ type OfflineConfig struct {
 // DefaultOfflineConfig returns the compiled defaults for offline mode.
 func DefaultOfflineConfig() OfflineConfig {
 	return OfflineConfig{
-		Enabled:              false,
 		SnapshotIntervalMins: 10,
 		ArticleDays:          7,
 		CachePath:            "./data/offline_cache.db",
@@ -36,10 +34,6 @@ func DefaultOfflineConfig() OfflineConfig {
 // falling back to compiled defaults.
 func loadOfflineConfig(settings map[string]string) OfflineConfig {
 	d := DefaultOfflineConfig()
-	if v, ok := settings["offline_enabled"]; ok {
-		v = strings.Trim(v, `"`)
-		d.Enabled = v == "true"
-	}
 	d.SnapshotIntervalMins = settingInt(settings, "offline_snapshot_interval_mins", d.SnapshotIntervalMins)
 	d.ArticleDays = settingInt(settings, "offline_article_days", d.ArticleDays)
 	if v, ok := settings["offline_cache_path"]; ok {

@@ -56,7 +56,7 @@ If omitted, the scripts default to their own directory.
 | `clean` | Remove `build/` directory |
 | `test` | Run all test suites (delegates to `test.ps1` / `test.sh`) |
 | `all` | Full build: setup + duckdb + server + demo-data + tests |
-| `build-minimum` | Bare minimum to run the app: setup + duckdb + server. No tests, no demo data, no Node.js needed |
+| `minimum` | Bare minimum to run the app: setup + duckdb + server. No tests, no demo data, no Node.js needed |
 | `help` | Show available commands |
 
 ### Flags
@@ -70,16 +70,16 @@ Tests are **enabled by default** in the `all` command.
 
 ### Minimal Build
 
-If you just want to get the app running with no extras, use `build-minimum`:
+If you just want to get the app running with no extras, use `minimum`:
 
 ```powershell
 # Windows
-.\build.ps1 build-minimum
+.\build.ps1 minimum
 ```
 
 ```bash
 # Linux / macOS
-./build.sh build-minimum
+./build.sh minimum
 ```
 
 This runs only **setup → duckdb → server** — no tests, no demo data, no Node.js required. You can always add demo feeds later with `run.ps1 demo-data` / `run.sh demo-data`.
@@ -94,7 +94,77 @@ The build scripts install Python packages using a **binary-first, source fallbac
 
 This means pre-built wheels are preferred for speed, but the build still succeeds on platforms where binary wheels aren't available (e.g. Alpine Linux, older Python versions, exotic architectures).
 
-> **Note:** `psycopg2-binary` is only in `migrate/requirements.txt` — it is **not** installed during normal builds (`setup`, `fetcher`, `build-minimum`, `all`). It is only pulled in when you explicitly run `build.ps1 migrate` / `build.sh migrate` for TT-RSS PostgreSQL migration.
+> **Note:** `psycopg2-binary` is only in `migrate/requirements.txt` — it is **not** installed during normal builds (`setup`, `fetcher`, `minimum`, `all`). It is only pulled in when you explicitly run `build.ps1 migrate` / `build.sh migrate` for TT-RSS PostgreSQL migration.
+
+---
+
+## Custom Installation Directory
+
+By default, the build scripts create all artifacts (Python venv, server binary, frontend files, configuration) in the same directory as the build script itself. If you want to install RSS-Lance in a separate location (for better organization, system-wide installation, or deployment), use the `-Dir` (Windows) or `-d` (Linux/macOS) flag.
+
+### What Happens With a Custom Directory
+
+When you specify a custom install directory:
+
+1. All build artifacts are placed in the specified directory
+2. The directory becomes **self-contained** — you can move or copy it to another location and run it independently
+3. The original cloned git repository is no longer needed and can be deleted to free up space
+4. All subsequent run commands must be executed from the install directory or you must specify the directory again
+
+### Installation Examples
+
+#### Windows
+
+```powershell
+# Build and install to C:\Apps\rss-lance
+.\build.ps1 -Dir C:\Apps\rss-lance all
+
+# Then navigate to the install directory and run from there
+cd C:\Apps\rss-lance
+.\run.ps1 server
+
+# Or run commands from anywhere by specifying -Dir again
+.\build.ps1 -Dir C:\Apps\rss-lance help
+```
+
+#### Linux / macOS
+
+```bash
+# Build and install to /opt/rss-lance
+./build.sh -d /opt/rss-lance all
+
+# Then navigate to the install directory and run from there
+cd /opt/rss-lance
+./run.sh server
+
+# Or run commands from anywhere by specifying -d again
+./build.sh -d /opt/rss-lance help
+```
+
+### Cleanup: Deleting the Repository Clone
+
+Once installation is complete in your custom directory, the original cloned repository is no longer needed:
+
+```powershell
+# Windows - delete the cloned repo (NOT the install directory)
+Remove-Item -Recurse -Force C:\path\to\rss-lance-clone
+
+# Linux / macOS - delete the cloned repo (NOT the install directory)
+rm -rf /path/to/rss-lance-clone
+```
+
+The install directory at `C:\Apps\rss-lance` (or `/opt/rss-lance`, etc.) contains everything needed to run RSS-Lance independently.
+
+### Moving an Installation
+
+Since the install directory is self-contained, you can move it to a different location at any time. Just use standard file operations (`cp -r`, `rsync`, Windows Explorer, etc.):
+
+```bash
+# Linux / macOS example: move installation to a new location
+cp -r /opt/rss-lance /home/user/rss-lance-backup
+cd /home/user/rss-lance-backup
+./run.sh server
+```
 
 ---
 

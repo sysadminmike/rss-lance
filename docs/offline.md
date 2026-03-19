@@ -97,7 +97,7 @@ All Store read methods use a two-layer overlay: in-memory write cache (CTE) on t
 | `GET /api/articles/:id` | `cached_articles` |
 | `GET /api/articles/batch` | `cached_articles` |
 | `GET /api/categories` | `cached_categories` |
-| `GET /api/settings` | In-memory settings copy → `cached_settings` → defaults |
+| `GET /api/settings` | In-memory settings copy -> `cached_settings` -> defaults |
 
 API handlers don't know whether they're serving live or cached data. The fallback is handled inside the Store implementation.
 
@@ -110,7 +110,7 @@ All user write actions are buffered through two layers:
 1. **In-memory write cache** (`cache.go`) -- the `cached_articles` or `cached_settings` row is updated immediately so subsequent reads reflect the change via CTE overlay.
 2. **DuckDB pending changes** (`offline_cache.go`) -- the action is appended to the `pending_changes` DuckDB table. A background goroutine flushes pending changes to Lance every 30 seconds while online. While offline, changes accumulate until reconnection.
 
-Supported offline write actions:
+Supported write actions:
 
 | Action | What's recorded |
 |---|---|
@@ -121,8 +121,8 @@ Supported offline write actions:
 
 **Deduplication rules:**
 
-- **Settings**: UPSERT keyed on `(action='setting', article_id=key)`. Changing the same setting 5 times while offline keeps only the final value.
-- **Articles**: All rows kept; collapsed to final state per article at replay time.
+- **Settings**: UPSERT keyed on `(action='setting', article_id=key)`. Changing the same setting 5 times keeps only the final value.
+- **Articles**: All rows kept; collapsed to final state per article at flush time.
 
 ---
 

@@ -227,12 +227,7 @@ func TestGetDBStatusArticleMetrics(t *testing.T) {
 	s.writer = w
 
 	// No-op write cache (no pending overrides)
-	s.cache = newWriteCache(CacheConfig{
-		FlushThreshold:    100,
-		FlushIntervalSecs: 3600,
-	}, func(overrides map[string]*articleOverride) error {
-		return nil
-	})
+	s.cache = newWriteCache()
 	defer s.cache.close()
 
 	// No-op log buffer

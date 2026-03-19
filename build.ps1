@@ -25,7 +25,7 @@
 
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("setup", "server", "server-all", "fetcher", "run-fetcher", "fetch-once", "run-server", "demo-data", "duckdb", "migrate", "migrate-cleanup", "test", "clean", "release", "all", "build-minimum", "help")]
+    [ValidateSet("setup", "server", "server-all", "fetcher", "run-fetcher", "fetch-once", "run-server", "demo-data", "duckdb", "migrate", "migrate-cleanup", "test", "clean", "release", "all", "minimum", "help")]
     [string]$Command = "help",
 
     [Parameter()]
@@ -498,7 +498,7 @@ Commands:
   test         Run all test suites (or use test.ps1 directly)
   clean        Remove build artifacts
   release      Build + package a release zip (exe + frontend + fetcher + config)
-  build-minimum  Bare minimum to run the app (setup + duckdb + server)
+  minimum      Bare minimum to run the app (setup + duckdb + server)
                No tests, no demo data, no Node.js needed
   all          Full build (setup + duckdb + server + demo-data + tests)
                Use -NoTests to skip tests: .\build.ps1 -NoTests all
@@ -531,7 +531,7 @@ switch ($Command) {
     "test"       { Run-Tests }
     "clean"      { Clean }
     "release"    { Build-Release }
-    "build-minimum" {
+    "minimum" {
         Setup; Install-DuckDB; Build-Server
         Write-Host ""
         Write-Host "Minimum build complete. Your app is ready to run:" -ForegroundColor Green
