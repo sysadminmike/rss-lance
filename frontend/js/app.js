@@ -218,12 +218,6 @@ function startOfflinePolling() {
       const banner = getOrCreateOfflineBanner();
       const dot = getOrCreateOfflineDot();
 
-      if (!st.enabled) {
-        banner.classList.add('hidden');
-        dot.classList.remove('offline-dot-offline');
-        return;
-      }
-
       if (st.offline) {
         const pending = st.pending_changes || 0;
         banner.textContent = 'Working offline -- ' + pending + ' change' + (pending !== 1 ? 's' : '') + ' pending';

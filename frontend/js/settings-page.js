@@ -329,18 +329,8 @@ function renderSettingsPage(container, settings) {
         <h2>Offline Mode</h2>
         <p class="settings-page-hint">
           Cache data locally so the app keeps working when Lance storage is unreachable.
+          The local DuckDB cache is always active.
         </p>
-        <div class="log-option-row">
-          <div class="log-option-info">
-            <span class="log-option-label">Enable offline mode</span>
-            <span class="log-option-desc">Automatically fall back to a local cache when Lance is down</span>
-          </div>
-          <label class="toggle-switch toggle-sm">
-            <input type="checkbox" id="sp-offline-enabled"
-              ${settings['offline_enabled'] === true || settings['offline_enabled'] === 'true' ? 'checked' : ''}>
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
         <div class="log-option-row">
           <div class="log-option-info">
             <span class="log-option-label">Snapshot interval (minutes)</span>
@@ -642,7 +632,6 @@ function renderSettingsPage(container, settings) {
       offlineStatus.textContent = 'Saving...';
       offlineStatus.className = 'settings-page-status';
 
-      const enabled = document.getElementById('sp-offline-enabled').checked;
       const interval = parseInt(document.getElementById('sp-offline-interval').value, 10) || 10;
       const days = parseInt(document.getElementById('sp-offline-days').value, 10) || 7;
 
@@ -650,7 +639,6 @@ function renderSettingsPage(container, settings) {
         await apiFetch('/api/settings', {
           method: 'PUT',
           body: JSON.stringify({
-            offline_enabled: enabled ? 'true' : 'false',
             offline_snapshot_interval_mins: interval,
             offline_article_days: days,
           }),

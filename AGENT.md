@@ -9,7 +9,8 @@ RSS-Lance is a self-hosted single-user RSS reader using LanceDB for storage.
 ## Environment Setup
 
 ### Coding Hints
-- **NEVER use non-ASCII characters in code, shell scripts** This includes em dashes, curly quotes, ellipsis characters, multiplication signs, arrows, checkmarks, etc. They cause encoding problems in PowerShell scripts, shell scripts, TOML files, and Go source. Use only plain ASCII equivalents: `-` or `--` instead of em/en dashes, `*` or `x` instead of multiplication signs, `->` instead of arrows, `...` (three dots) instead of ellipsis. The ONLY exception is echo/print/Write-Host output strings where UTF-8 characters are acceptable for display purposes (e.g. progress indicators, emoji in status messages). If you see non-ASCII characters when editing files, replace them with ASCII equivalents immediately.
+- **NEVER commit, add, or merge to git without explicit approval from the user.** Always ask the user before running `git add`, `git commit`, `git merge`, `git push`, or any other command that modifies the git history or staging area.
+- **NEVER use non-ASCII characters in code, shell scripts**This includes em dashes, curly quotes, ellipsis characters, multiplication signs, arrows, checkmarks, etc. They cause encoding problems in PowerShell scripts, shell scripts, TOML files, and Go source. Use only plain ASCII equivalents: `-` or `--` instead of em/en dashes, `*` or `x` instead of multiplication signs, `->` instead of arrows, `...` (three dots) instead of ellipsis. The ONLY exception is echo/print/Write-Host output strings where UTF-8 characters are acceptable for display purposes (e.g. progress indicators, emoji in status messages). If you see non-ASCII characters when editing files, replace them with ASCII equivalents immediately.
 - **NEVER use em dashes in documentation**.
 - When you update code, also update IMPLEMENTATION_PLAN.md, README.md, and AGENT.md and documentation in docs/ to keep documentation in sync, also update tests to keep them in sync.
 - Check windows machine as it could have windows system for linux so bash and other gnu tools may be avaliable
@@ -197,7 +198,7 @@ cd server
 | `test` | Run test suites (delegates to test.ps1/test.sh) |
 | `clean` | Remove `build/` directory |
 | `release` | Build server, package zip with exe + duckdb + frontend + fetcher + config + run scripts |
-| `build-minimum` | Bare minimum to run the app (setup + duckdb + server). No tests, no demo data, no Node.js needed |
+| `minimum` | Bare minimum to run the app (setup + duckdb + server). No tests, no demo data, no Node.js needed |
 | `all` | Full build (setup + duckdb + server + demo-data) |
 | `help` | Show available commands |
 
@@ -316,7 +317,7 @@ Tests also run automatically as part of `build.ps1 all` / `build.sh all`. To ski
 13. Checks final DB state via DuckDB
 14. **Post-failure checks** -- if tests fail and `--build-version` was given, re-checks server health to detect crashes or binary replacement
 
-**~290 checks** across 39 test sections covering: prerequisites, setup, local RSS server, populate data, sanitization (chrome/tracking/scripts), fetcher log writes, DuckDB verification, server startup, **build version verification**, feed listing, single feed, article listing, articles by feed, view article, batch fetch, mark read/unread, unread filter, star/unstar, mark-all-read, multiple state changes (cache), DB status, server runtime status, final global state, categories, sorting, pagination, log settings, log trimming (count mode), log trimming (age mode), settings DB verification, custom CSS, error handling, final DuckDB verification, queue feed, logs API endpoint, config (show_shutdown), shutdown API, and **offline mode** (data disappear/recovery, skipped on Windows).
+**~290 checks** across 39 test sections covering: prerequisites, setup, local RSS server, populate data, sanitization (chrome/tracking/scripts), fetcher log writes, DuckDB verification, server startup, **build version verification**, feed listing, single feed, article listing, articles by feed, view article, batch fetch, mark read/unread, unread filter, star/unstar, mark-all-read, multiple state changes (cache), DB status, server runtime status, final global state, categories, sorting, pagination, log settings, log trimming (count mode), log trimming (age mode), settings DB verification, custom CSS, error handling, final DuckDB verification, queue feed, logs API endpoint, config (show_shutdown), shutdown API, and **offline mode** (data disappear/recovery).
 
 ### Test File Locations
 

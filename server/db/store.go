@@ -255,16 +255,6 @@ func settingInt(settings map[string]string, key string, def int) int {
 	return n
 }
 
-// loadCacheConfig reads cache.flush_threshold and cache.flush_interval_secs
-// from the settings table, falling back to compiled defaults.
-func loadCacheConfig(settings map[string]string) CacheConfig {
-	d := DefaultCacheConfig()
-	return CacheConfig{
-		FlushThreshold:    settingInt(settings, "cache.flush_threshold", d.FlushThreshold),
-		FlushIntervalSecs: settingInt(settings, "cache.flush_interval_secs", d.FlushIntervalSecs),
-	}
-}
-
 // loadLogBufferConfig reads log_buffer.flush_threshold and
 // log_buffer.flush_interval_secs from the settings table.
 func loadLogBufferConfig(settings map[string]string) LogBufferConfig {

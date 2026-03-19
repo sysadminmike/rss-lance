@@ -21,15 +21,13 @@ func (h *OfflineStatusHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	st := h.store.OfflineStatus()
 	if st == nil {
-		// Offline mode not enabled
+		// offCache not initialized (should not happen in normal operation)
 		jsonOK(w, map[string]any{
-			"enabled": false,
 			"offline": false,
 		})
 		return
 	}
 	jsonOK(w, map[string]any{
-		"enabled":         true,
 		"offline":         st.Offline,
 		"pending_changes": st.PendingChanges,
 		"pending_logs":    st.PendingLogs,

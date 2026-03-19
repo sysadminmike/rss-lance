@@ -2230,210 +2230,227 @@ def run_e2e(keep: bool = False, verbose: bool = False,
                 pass
             server_proc = None  # already stopped via API
 
-        # ======== Offline Mode: Lance data disappears (non-Windows) ========
-        # On Windows, open file handles prevent renaming the data dir while
-        # the server is running, so this test is skipped there.
-        if sys.platform == "win32":
-            t.section("Offline Mode (skipped on Windows)")
-            t.log("Skipping offline data-disappear tests (Windows file locking)")
-        else:
-            t.section("Offline Mode: Lance data disappears")
+        # ======== Offline Mode: Lance data disappears ========
+        t.section("Offline Mode: Lance data disappears")
 
-            # Seed offline settings into the Lance DB before starting server
-            t.log("Seeding offline settings...")
-            offline_cache_file = os.path.join(temp_dir, "offline_cache.db")
-            db.put_settings({
-                "offline_enabled":                "true",
-                "offline_snapshot_interval_mins":  "1",
-                "offline_cache_path":             offline_cache_file.replace(os.sep, "/"),
-            })
+        # Seed offline settings into the Lance DB before starting server
+        t.log("Seeding offline settings...")
+        offline_cache_file = os.path.join(temp_dir, "offline_cache.db")
+        db.put_settings({
+            "offline_snapshot_interval_mins":  "1",
+            "offline_cache_path":             offline_cache_file.replace(os.sep, "/"),
+        })
 
-            # Create a separate local dir for DuckDB (simulates duckdb_path config)
-            duckdb_local = os.path.join(temp_dir, "duckdb_local")
-            os.makedirs(duckdb_local, exist_ok=True)
+        # Create a separate local dir for DuckDB (simulates duckdb_path config)
+        duckdb_local = os.path.join(temp_dir, "duckdb_local")
+        os.makedirs(duckdb_local, exist_ok=True)
 
-            # Rewrite config with duckdb_path + show_shutdown=true so we can
-            # cleanly stop the server at the end
-            with open(config_path, "w") as f:
-                f.write(textwrap.dedent(f"""\
-                    [storage]
-                    type = "local"
-                    path = "{data_path.replace(os.sep, '/')}"
-                    duckdb_path = "{duckdb_local.replace(os.sep, '/')}"
+        # Rewrite config with duckdb_path + show_shutdown=true so we can
+        # cleanly stop the server at the end
+        with open(config_path, "w") as f:
+            f.write(textwrap.dedent(f"""\
+                [storage]
+                type = "local"
+                path = "{data_path.replace(os.sep, '/')}"
+                duckdb_path = "{duckdb_local.replace(os.sep, '/')}"
 
-                    [fetcher]
-                    interval_minutes = 30
-                    max_concurrent = 2
-                    user_agent = "RSS-Lance-E2E-Test/1.0"
+                [fetcher]
+                interval_minutes = 30
+                max_concurrent = 2
+                user_agent = "RSS-Lance-E2E-Test/1.0"
 
-                    [server]
-                    host = "127.0.0.1"
-                    port = {api_port}
-                    frontend_dir = "{str(ROOT / 'frontend').replace(os.sep, '/')}"
-                    show_shutdown = true
+                [server]
+                host = "127.0.0.1"
+                port = {api_port}
+                frontend_dir = "{str(ROOT / 'frontend').replace(os.sep, '/')}"
+                show_shutdown = true
 
-                    [compaction]
-                    articles      = 999
-                    feeds         = 999
-                    categories    = 999
-                    pending_feeds = 999
-                """))
+                [compaction]
+                articles      = 999
+                feeds         = 999
+                categories    = 999
+                pending_feeds = 999
+            """))
 
-            # Start server with offline mode
-            server_log = open(server_log_path, "w")
-            server_proc = subprocess.Popen(
-                [str(SERVER_BIN), "-config", config_path],
-                stdout=server_log,
-                stderr=subprocess.STDOUT,
-                cwd=str(ROOT),
-                env=server_env,
-            )
+        # Start server with offline mode
+        server_log = open(server_log_path, "w")
+        server_proc = subprocess.Popen(
+            [str(SERVER_BIN), "-config", config_path],
+            stdout=server_log,
+            stderr=subprocess.STDOUT,
+            cwd=str(ROOT),
+            env=server_env,
+        )
 
-            server_ready = False
-            for i in range(60):
-                if server_proc.poll() is not None:
-                    server_log.close()
-                    with open(server_log_path) as f:
-                        log_content = f.read()
-                    t.check("Server started (offline)", False,
-                            f"Exited with code {server_proc.returncode}\n{log_content[:500]}")
-                    server_proc = None
+        server_ready = False
+        for i in range(60):
+            if server_proc.poll() is not None:
+                server_log.close()
+                with open(server_log_path) as f:
+                    log_content = f.read()
+                t.check("Server started (offline)", False,
+                        f"Exited with code {server_proc.returncode}\n{log_content[:500]}")
+                server_proc = None
+                break
+            try:
+                status, _ = api.get("/api/feeds")
+                if status == 200:
+                    server_ready = True
                     break
-                try:
-                    status, _ = api.get("/api/feeds")
-                    if status == 200:
-                        server_ready = True
-                        break
-                except Exception:
-                    pass
-                time.sleep(0.5)
-            else:
-                t.check("Server started (offline)", False, "Did not respond within 30s")
+            except Exception:
+                pass
+            time.sleep(0.5)
+        else:
+            t.check("Server started (offline)", False, "Did not respond within 30s")
 
-            if server_ready:
-                t.check("Server started (offline)", True)
+        if server_ready:
+            t.check("Server started (offline)", True)
 
-                # Verify offline mode is enabled but not yet offline
+            # Verify offline mode is enabled but not yet offline
+            status, ost = api.get("/api/offline-status")
+            t.check("GET /api/offline-status returns 200", status == 200)
+            if isinstance(ost, dict):
+                t.check("Offline mode enabled", ost.get("enabled") == True,
+                        f"Got: {ost}")
+                t.check("Not offline yet", ost.get("offline") == False,
+                        f"Got: {ost}")
+
+            # Wait for initial snapshot to complete (last_snapshot becomes non-empty)
+            t.log("Waiting for initial offline snapshot...")
+            snapshot_ready = False
+            for i in range(30):  # up to 15s
                 status, ost = api.get("/api/offline-status")
-                t.check("GET /api/offline-status returns 200", status == 200)
-                if isinstance(ost, dict):
-                    t.check("Offline mode enabled", ost.get("enabled") == True,
-                            f"Got: {ost}")
-                    t.check("Not offline yet", ost.get("offline") == False,
-                            f"Got: {ost}")
+                if isinstance(ost, dict) and ost.get("last_snapshot"):
+                    snapshot_ready = True
+                    break
+                time.sleep(0.5)
+            t.check("Initial snapshot completed",
+                    snapshot_ready,
+                    f"last_snapshot still empty after 15s")
 
-                # Wait for initial snapshot to complete (last_snapshot becomes non-empty)
-                t.log("Waiting for initial offline snapshot...")
-                snapshot_ready = False
-                for i in range(30):  # up to 15s
-                    status, ost = api.get("/api/offline-status")
-                    if isinstance(ost, dict) and ost.get("last_snapshot"):
-                        snapshot_ready = True
-                        break
-                    time.sleep(0.5)
-                t.check("Initial snapshot completed",
-                        snapshot_ready,
-                        f"last_snapshot still empty after 15s")
+            if snapshot_ready:
+                cached_count = ost.get("cache_articles", 0)
+                t.log(f"Snapshot done: {cached_count} articles cached")
+                t.check("Snapshot cached articles", cached_count > 0,
+                        f"Expected >0, got {cached_count}")
 
-                if snapshot_ready:
-                    cached_count = ost.get("cache_articles", 0)
-                    t.log(f"Snapshot done: {cached_count} articles cached")
-                    t.check("Snapshot cached articles", cached_count > 0,
-                            f"Expected >0, got {cached_count}")
-
-                    # ---- Simulate Lance disappearing: rename data_path ----
-                    data_path_hidden = data_path + "_hidden"
-                    t.log(f"Renaming data dir to simulate Lance failure...")
-                    try:
-                        os.rename(data_path, data_path_hidden)
-                        rename_ok = True
-                    except OSError as e:
-                        rename_ok = False
-                        t.check("Rename data dir", False, f"OS error: {e}")
-
-                    if rename_ok:
-                        t.check("Data dir renamed", not os.path.exists(data_path))
-
-                        # Trigger goOffline by making an API call that hits Lance
-                        t.log("Triggering offline transition via API call...")
-                        status, body = api.get("/api/articles")
-                        # The server should still respond (from cache or with error)
-                        # but internally it should have called goOffline()
-
-                        # Poll /api/offline-status until offline=true (up to 10s)
-                        went_offline = False
-                        for i in range(20):
-                            status, ost = api.get("/api/offline-status")
-                            if isinstance(ost, dict) and ost.get("offline") == True:
-                                went_offline = True
-                                break
-                            # Make another API request to trigger goOffline if
-                            # the first one didn't (e.g. came from write cache)
-                            api.get("/api/feeds")
-                            time.sleep(0.5)
-                        t.check("Server went offline after data dir removed",
-                                went_offline,
-                                f"offline-status: {ost}")
-
-                        if went_offline:
-                            # Verify we can still read cached data while offline
-                            status, arts = api.get("/api/articles")
-                            t.check("Articles still served while offline",
-                                    status == 200,
-                                    f"Got status {status}")
-                            if isinstance(arts, list):
-                                t.check("Cached articles returned",
-                                        len(arts) > 0,
-                                        f"Got {len(arts)} articles")
-
-                            pending_before = 0
-                            status, ost = api.get("/api/offline-status")
-                            if isinstance(ost, dict):
-                                pending_before = ost.get("pending_changes", 0)
-
-                            # ---- Restore data dir: simulate reconnect ----
-                            t.log("Restoring data dir...")
-                            os.rename(data_path_hidden, data_path)
-                            t.check("Data dir restored", os.path.exists(data_path))
-
-                            # Wait for health probe to detect recovery (5s interval
-                            # when offline, give it up to 20s)
-                            t.log("Waiting for server to come back online...")
-                            came_online = False
-                            for i in range(40):  # up to 20s
-                                status, ost = api.get("/api/offline-status")
-                                if isinstance(ost, dict) and ost.get("offline") == False:
-                                    came_online = True
-                                    break
-                                time.sleep(0.5)
-                            t.check("Server came back online",
-                                    came_online,
-                                    f"offline-status after 20s: {ost}")
-
-                            if came_online:
-                                # Verify data is accessible again
-                                status, arts = api.get("/api/articles")
-                                t.check("Articles accessible after recovery",
-                                        status == 200 and isinstance(arts, list) and len(arts) > 0,
-                                        f"status={status}, articles={len(arts) if isinstance(arts, list) else 'N/A'}")
-                        else:
-                            # Even if offline detection failed, restore the dir
-                            t.log("Restoring data dir (offline detection failed)...")
-                            os.rename(data_path_hidden, data_path)
-                    # end if rename_ok
-
-                # Stop the server for this section
-                if server_proc:
-                    server_proc.terminate()
-                    try:
-                        server_proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        server_proc.kill()
-                    server_proc = None
+                # ---- Simulate Lance disappearing: rename data_path ----
+                data_path_hidden = data_path + "_hidden"
+                t.log(f"Renaming data dir to simulate Lance failure...")
                 try:
-                    server_log.close()
-                except Exception:
-                    pass
+                    if sys.platform == "win32":
+                        # On Windows, DuckDB holds file locks inside data_path.
+                        # Kill the external duckdb.exe process first so the
+                        # rename can succeed.
+                        duck_pid = None
+                        try:
+                            st_code, srv_st = api.get("/api/server-status")
+                            if st_code == 200 and isinstance(srv_st, dict):
+                                dp = srv_st.get("duckdb_process")
+                                if isinstance(dp, dict):
+                                    duck_pid = dp.get("pid")
+                        except Exception as exc:
+                            t.log(f"Could not get DuckDB PID: {exc}")
+                        if duck_pid:
+                            t.log(f"Killing duckdb.exe (PID {duck_pid}) to release file locks...")
+                            subprocess.call(
+                                ["taskkill", "/F", "/PID", str(int(duck_pid))],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                timeout=5,
+                            )
+                            time.sleep(0.3)
+                        else:
+                            t.log("No DuckDB PID found; attempting rename anyway")
+                    os.rename(data_path, data_path_hidden)
+                    rename_ok = True
+                except OSError as e:
+                    rename_ok = False
+                    t.check("Rename data dir", False, f"OS error: {e}")
+
+                if rename_ok:
+                    t.check("Data dir renamed", not os.path.exists(data_path))
+
+                    # Trigger goOffline by making an API call that hits Lance
+                    t.log("Triggering offline transition via API call...")
+                    status, body = api.get("/api/articles")
+                    # The server should still respond (from cache or with error)
+                    # but internally it should have called goOffline()
+
+                    # Poll /api/offline-status until offline=true (up to 10s)
+                    went_offline = False
+                    for i in range(20):
+                        status, ost = api.get("/api/offline-status")
+                        if isinstance(ost, dict) and ost.get("offline") == True:
+                            went_offline = True
+                            break
+                        # Make another API request to trigger goOffline if
+                        # the first one didn't (e.g. came from write cache)
+                        api.get("/api/feeds")
+                        time.sleep(0.5)
+                    t.check("Server went offline after data dir removed",
+                            went_offline,
+                            f"offline-status: {ost}")
+
+                    if went_offline:
+                        # Verify we can still read cached data while offline
+                        status, arts = api.get("/api/articles")
+                        t.check("Articles still served while offline",
+                                status == 200,
+                                f"Got status {status}")
+                        if isinstance(arts, list):
+                            t.check("Cached articles returned",
+                                    len(arts) > 0,
+                                    f"Got {len(arts)} articles")
+
+                        pending_before = 0
+                        status, ost = api.get("/api/offline-status")
+                        if isinstance(ost, dict):
+                            pending_before = ost.get("pending_changes", 0)
+
+                        # ---- Restore data dir: simulate reconnect ----
+                        t.log("Restoring data dir...")
+                        os.rename(data_path_hidden, data_path)
+                        t.check("Data dir restored", os.path.exists(data_path))
+
+                        # Wait for health probe to detect recovery (5s interval
+                        # when offline, give it up to 20s)
+                        t.log("Waiting for server to come back online...")
+                        came_online = False
+                        for i in range(40):  # up to 20s
+                            status, ost = api.get("/api/offline-status")
+                            if isinstance(ost, dict) and ost.get("offline") == False:
+                                came_online = True
+                                break
+                            time.sleep(0.5)
+                        t.check("Server came back online",
+                                came_online,
+                                f"offline-status after 20s: {ost}")
+
+                        if came_online:
+                            # Verify data is accessible again
+                            status, arts = api.get("/api/articles")
+                            t.check("Articles accessible after recovery",
+                                    status == 200 and isinstance(arts, list) and len(arts) > 0,
+                                    f"status={status}, articles={len(arts) if isinstance(arts, list) else 'N/A'}")
+                    else:
+                        # Even if offline detection failed, restore the dir
+                        t.log("Restoring data dir (offline detection failed)...")
+                        os.rename(data_path_hidden, data_path)
+                # end if rename_ok
+
+            # Stop the server for this section
+            if server_proc:
+                server_proc.terminate()
+                try:
+                    server_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    server_proc.kill()
+                server_proc = None
+            try:
+                server_log.close()
+            except Exception:
+                pass
 
     except KeyboardInterrupt:
         print("\n\n  Interrupted by user.")

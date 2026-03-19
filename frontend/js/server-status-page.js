@@ -166,10 +166,8 @@ function renderPage(container, data, offlineData = {}) {
       ${statCard('RSS-Lance Up', formatDuration(srv.uptime_seconds), '\u23F1')}
       ${duckdb ? statCard('DuckDB Up', formatDuration(duckdb.uptime_seconds), '\uD83E\uDD86') : ''}
       ${(() => {
-        const enabled = offlineData.enabled;
         const offline = offlineData.offline;
         const label = 'Lance Tables';
-        if (!enabled) return statCard(label, 'Online', '\uD83D\uDDC4', 'var(--accent)');
         return offline
           ? statCard(label, 'Offline', '\uD83D\uDDC4', '#f97316')
           : statCard(label, 'Online', '\uD83D\uDDC4', 'var(--accent)');

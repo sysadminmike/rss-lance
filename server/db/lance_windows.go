@@ -161,12 +161,9 @@ func Open(dataPath string, duckdbPath ...string) (Store, error) {
 		}
 	}
 
-	// Set up write cache - reads JOIN pending overrides via CTE;
-	// periodic flush writes through the native lancedb-go SDK.
-	s.cache = newWriteCache(loadCacheConfig(settings), func(overrides map[string]*articleOverride) error {
-		return s.writer.FlushOverrides(overrides)
-	})
-	s.cache.logFn = func(entry LogEntry) { s.WriteLog(entry) }
+	// Set up write cache - reads JOIN pending overrides via CTE.
+	// Writes go to DuckDB pending_changes; background flush writes to Lance.
+	s.cache = newWriteCache()
 
 	// Set up buffered log writer with 3-tier fallback:
 	//   Tier 1: Lance (via native lancedb-go SDK)
@@ -179,14 +176,13 @@ func Open(dataPath string, duckdbPath ...string) (Store, error) {
 		return s.flushLogs3Tier(entries)
 	})
 
-	// Always open DuckDB offline_cache.db for log fallback, regardless of
-	// offline_enabled setting. Full offline mode (snapshots, health probe)
-	// only starts when offline_enabled=true.
+	// Always open DuckDB offline_cache.db for log fallback, write buffering,
+	// and offline snapshots/health probe.
 	if err := s.initLogFallback(settings); err != nil {
 		log.Printf("log fallback DuckDB init error (logs will only buffer in memory): %v", err)
 	}
 
-	// Initialize full offline mode if enabled (snapshots, probe, replay)
+	// Start offline goroutines (snapshots, health probe)
 	if err := s.initOffline(settings); err != nil {
 		log.Printf("offline cache init error (continuing without offline): %v", err)
 	}
@@ -298,13 +294,10 @@ func (s *cliStore) initLogFallback(settings map[string]string) error {
 	return nil
 }
 
-// initOffline reads offline settings and starts the cache + goroutines.
+// initOffline starts the offline goroutines (snapshot loop, health probe).
 // If offCache is already open (from initLogFallback), it reuses the connection.
 func (s *cliStore) initOffline(settings map[string]string) error {
 	cfg := loadOfflineConfig(settings)
-	if !cfg.Enabled {
-		return nil
-	}
 
 	// offCache was already opened by initLogFallback; just start goroutines.
 	if s.offCache == nil {
@@ -329,8 +322,9 @@ func (s *cliStore) initOffline(settings map[string]string) error {
 
 	go s.runSnapshotLoop(ctx, cfg.SnapshotIntervalMins)
 	go s.runHealthProbe(ctx)
+	go s.runPendingFlush(ctx)
 
-	log.Printf("Offline mode enabled (snapshot every %d min, cache %d days of articles)",
+	log.Printf("Offline cache active (snapshot every %d min, cache %d days of articles)",
 		cfg.SnapshotIntervalMins, cfg.ArticleDays)
 	return nil
 }
@@ -504,24 +498,60 @@ func (s *cliStore) probeLance() bool {
 	return err == nil
 }
 
-// handleReconnect replays pending changes and switches back to online mode.
+// runPendingFlush periodically flushes DuckDB pending_changes to Lance.
+// Uses the same collapse logic as Replay: pending_changes → FlushOverrides /
+// MarkAllRead / PutSettingsBatch, then clears. On failure entries stay in
+// DuckDB and are retried next cycle.
+func (s *cliStore) runPendingFlush(ctx context.Context) {
+	const flushInterval = 30 * time.Second
+	ticker := time.NewTicker(flushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if s.isOffline() {
+				continue // don't flush while Lance is unreachable
+			}
+			s.flushPendingChanges()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// flushPendingChanges replays buffered writes from DuckDB into Lance.
+// Clears the in-memory writeCache on success.
+func (s *cliStore) flushPendingChanges() {
+	if s.offCache == nil {
+		return
+	}
+	count, err := s.offCache.Replay(s.writer)
+	if err != nil {
+		debug.Log(debug.Lance, "pending flush error: %v", err)
+		return
+	}
+	if count > 0 {
+		s.cache.clear()
+		debug.Log(debug.Lance, "pending flush: %d changes committed to Lance", count)
+	}
+}
+
+// handleReconnect flushes pending changes and switches back to online mode.
 func (s *cliStore) handleReconnect() {
 	if s.offCache == nil {
 		return
 	}
 
-	count, err := s.offCache.Replay(s.writer)
-	if err != nil {
-		log.Printf("offline replay error (staying offline): %v", err)
-		return
-	}
+	// Flush pending writes (same code path as periodic flush)
+	s.flushPendingChanges()
 
 	// Also drain any cached logs accumulated during the outage
 	s.drainCachedLogs(500)
 
 	s.offCache.isOffline.Store(false)
-	log.Printf("Back online: %d changes replayed", count)
-	s.offCache.emitLog("info", fmt.Sprintf("Back online: %d changes replayed", count))
+	log.Printf("Back online")
+	s.offCache.emitLog("info", "Back online")
 
 	// Trigger a fresh snapshot now that we're back
 	go func() {
@@ -895,48 +925,38 @@ func (s *cliStore) GetArticleBatch(articleIDs []string) ([]Article, error) {
 
 func (s *cliStore) SetArticleRead(articleID string, isRead bool) error {
 	// Record in cache - reads will overlay this via CTE JOIN.
-	// Periodic flush will MERGE into Lance.
 	s.cache.setRead(articleID, isRead)
-	if s.isOffline() {
-		action := "read"
-		if !isRead {
-			action = "unread"
-		}
-		debug.Log(debug.Lance, "offline write: %s article %s", action, articleID)
-		s.offCache.addPendingChange(articleID, action, "")
-		v := isRead
-		s.offCache.updateCachedArticle(articleID, &v, nil)
+	// Buffer in DuckDB pending_changes; background flush writes to Lance.
+	action := "read"
+	if !isRead {
+		action = "unread"
 	}
+	debug.Log(debug.Lance, "buffered write: %s article %s", action, articleID)
+	s.offCache.addPendingChange(articleID, action, "")
+	v := isRead
+	s.offCache.updateCachedArticle(articleID, &v, nil)
 	return nil
 }
 
 func (s *cliStore) SetArticleStarred(articleID string, isStarred bool) error {
 	s.cache.setStarred(articleID, isStarred)
-	if s.isOffline() {
-		action := "star"
-		if !isStarred {
-			action = "unstar"
-		}
-		debug.Log(debug.Lance, "offline write: %s article %s", action, articleID)
-		s.offCache.addPendingChange(articleID, action, "")
-		v := isStarred
-		s.offCache.updateCachedArticle(articleID, nil, &v)
+	// Buffer in DuckDB pending_changes; background flush writes to Lance.
+	action := "star"
+	if !isStarred {
+		action = "unstar"
 	}
+	debug.Log(debug.Lance, "buffered write: %s article %s", action, articleID)
+	s.offCache.addPendingChange(articleID, action, "")
+	v := isStarred
+	s.offCache.updateCachedArticle(articleID, nil, &v)
 	return nil
 }
 
 func (s *cliStore) MarkAllRead(feedID string) error {
-	if s.isOffline() {
-		debug.Log(debug.Lance, "offline write: mark_all_read feed %s", feedID)
-		s.offCache.addPendingChange(feedID, "mark_all_read", "")
-		s.offCache.markAllReadCached(feedID)
-		return nil
-	}
-	// Flush any pending cached writes first so the native UPDATE sees clean state
-	if err := s.cache.flush(); err != nil {
-		return err
-	}
-	return s.writer.MarkAllRead(feedID)
+	debug.Log(debug.Lance, "buffered write: mark_all_read feed %s", feedID)
+	s.offCache.addPendingChange(feedID, "mark_all_read", "")
+	s.offCache.markAllReadCached(feedID)
+	return nil
 }
 
 // ── Category queries ──────────────────────────────────────────────────────────
@@ -1068,61 +1088,17 @@ func (s *cliStore) GetSetting(key string) (string, bool, error) {
 }
 
 func (s *cliStore) PutSetting(key, value string) error {
-	if s.isOffline() {
-		debug.Log(debug.Lance, "offline write: setting %s = %q", key, value)
-		s.offCache.updateCachedSetting(key, value)
-		s.offCache.addPendingSettingChange(key, value)
-		return nil
-	}
-	// Check if key exists; if not, INSERT instead of UPDATE
-	_, found, err := s.GetSetting(key)
-	if err != nil {
-		return err
-	}
-	if found {
-		return s.writer.PutSetting(key, value)
-	}
-	return s.writer.InsertSetting(key, value)
+	debug.Log(debug.Lance, "buffered write: setting %s = %q", key, value)
+	s.offCache.updateCachedSetting(key, value)
+	s.offCache.addPendingSettingChange(key, value)
+	return nil
 }
 
 func (s *cliStore) PutSettings(settings map[string]string) error {
-	if s.isOffline() {
-		debug.Log(debug.Lance, "offline write: %d settings batch", len(settings))
-		for k, v := range settings {
-			s.offCache.updateCachedSetting(k, v)
-			s.offCache.addPendingSettingChange(k, v)
-		}
-		return nil
-	}
-	// Get all existing keys in one query
-	existing, err := s.GetSettings()
-	if err != nil {
-		return err
-	}
-
-	// Split into updates (existing keys) and inserts (new keys)
-	updates := make(map[string]string)
-	inserts := make(map[string]string)
+	debug.Log(debug.Lance, "buffered write: %d settings batch", len(settings))
 	for k, v := range settings {
-		if _, found := existing[k]; found {
-			updates[k] = v
-		} else {
-			inserts[k] = v
-		}
-	}
-
-	// Batch update existing keys via lance writer (grouped by value)
-	if len(updates) > 0 {
-		if err := s.writer.PutSettingsBatch(updates); err != nil {
-			return err
-		}
-	}
-
-	// Insert new keys via native SDK
-	if len(inserts) > 0 {
-		if err := s.writer.InsertSettings(inserts); err != nil {
-			return err
-		}
+		s.offCache.updateCachedSetting(k, v)
+		s.offCache.addPendingSettingChange(k, v)
 	}
 	return nil
 }

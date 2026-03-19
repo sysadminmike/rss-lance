@@ -413,7 +413,7 @@ Commands:
   migrate-cleanup  Remove migrate scripts and their deps
   test         Run all test suites (or use test.sh directly)
   clean        Remove build artifacts
-  build-minimum  Bare minimum to run the app (setup + duckdb + server)
+  minimum      Bare minimum to run the app (setup + duckdb + server)
                No tests, no demo data, no Node.js needed
   all          Full build (setup + duckdb + server + demo-data + tests)
                Use --no-tests to skip tests: ./build.sh --no-tests all
@@ -442,7 +442,7 @@ case "${1:-help}" in
     migrate-cleanup) cmd_migrate_cleanup ;;
     test)        cmd_test ;;
     clean)       cmd_clean ;;
-    build-minimum)
+    minimum)
         cmd_setup; cmd_duckdb; cmd_server
         echo ""
         ok "Minimum build complete. Your app is ready to run:"
