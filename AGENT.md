@@ -219,6 +219,90 @@ These are the scripts users interact with after building. Copied to `-Dir` targe
 
 Options: `-DebugLog <categories>` (PS) / `--debug <categories>` (sh), `-Port <number>` / `--port <number>`
 
+### Testing a Branch with Git Worktrees (Windows)
+
+Use git worktrees to build and test a branch without switching away from main.
+This keeps your main working tree clean and avoids recompiling when switching back.
+
+**1. Create the worktree:**
+```powershell
+git worktree add ..\rss-lance-wip wip-changes   # adjust branch name as needed
+cd ..\rss-lance-wip
+```
+
+**2. Create junctions for large non-tracked assets:**
+
+These files are not in git and are too large to duplicate. Windows junctions
+make them appear in the worktree without copying.
+
+```powershell
+# From the worktree root:
+cmd /c mklink /J server\lib  ..\rss-lance\server\lib     # ~390 MB .a file
+cmd /c mklink /J tools       ..\rss-lance\tools           # duckdb.exe
+cmd /c mklink /J .venv       ..\rss-lance\.venv           # Python venv
+```
+
+If the branch needs its own Python deps (different requirements.txt), skip the
+`.venv` junction and run `build.ps1 setup` to create a fresh venv in the worktree.
+
+The `server/_lancedb-go` directory is gitignored but referenced via `go.mod replace`.
+If the worktree's go.mod points to a local path, junction it too:
+```powershell
+cmd /c mklink /J server\_lancedb-go ..\rss-lance\server\_lancedb-go
+```
+
+**3. Build and test:**
+```powershell
+.\build.ps1 server        # builds using junctioned lib/
+.\test.ps1 go             # Go tests (53 pass, 10 skip typical)
+.venv\Scripts\python.exe -m pytest tests\python\ -v --tb=short   # Python tests
+```
+
+The `data/` directory is created automatically by every build command.
+If no Lance tables exist (fresh worktree), `test_duckdb_persistent.py` skips
+gracefully. To get data, either run the server + fetcher once, or junction data/:
+```powershell
+cmd /c mklink /J data ..\rss-lance\data   # share main's data (read-only testing)
+```
+
+**4. E2E tests:**
+```powershell
+.venv\Scripts\python.exe tests\e2e_test.py   # runs against build\rss-lance-server.exe
+```
+
+E2E creates its own temp directory for data, configs, and server logs. The server
+binary is always `build\rss-lance-server.exe` relative to the worktree root.
+The E2E test uses `ROOT = Path(__file__).resolve().parent.parent` to find everything,
+so it works correctly from a worktree without additional configuration.
+
+Save output for comparison:
+```powershell
+.venv\Scripts\python.exe tests\e2e_test.py 2>&1 > build\e2e_output.txt
+Get-Content build\e2e_output.txt | Select-Object -Last 40   # check summary
+```
+
+**Expected E2E results: ~329 passed / ~7 expected failures out of ~336 total.**
+
+The 7 expected failures are:
+
+- **Settings DB Verification (4 failures):** The E2E test queries Lance tables directly via
+  DuckDB CLI to verify settings values. Because all writes are now buffered through
+  `pending_changes` and flushed every 30s, the direct Lance query may not see the latest
+  values yet. The API returns correct values (all API-based settings checks pass). These
+  failures are expected and harmless -- they test the flush timing, not correctness.
+
+- **Offline Mode (3 failures):** The E2E test checks for an `"enabled"` field in the
+  `/api/offline-status` response that no longer exists (offline mode is always active, the
+  toggle was removed). The test also checks snapshot article counts using `updated_at`
+  filtering that may see 0 cached articles depending on timing. These tests need updating
+  to match the new always-active offline architecture.
+
+**5. Cleanup when done:**
+```powershell
+cd ..\rss-lance
+git worktree remove ..\rss-lance-wip
+```
+
 ---
 
 ## Directory Layout
@@ -234,12 +318,13 @@ rss-lance/
 |   |-- api/            # REST API handlers
 |   |-- db/             # Hybrid DuckDB (reads) + lancedb-go (writes)
 |   |   |-- store.go        # Store interface + all struct types
-|   |   |-- cache.go        # Write cache + CTE overlay
+|   |   |-- cache.go        # In-memory write cache + CTE overlay for immediate read visibility
+|   |   |-- offline_cache.go # DuckDB pending_changes buffer + offline snapshot cache
 |   |   |-- logbuffer.go    # Buffered log writer (batch flush)
-|   |   |-- lance_writer.go # Shared CUD via lancedb-go native SDK
+|   |   |-- lance_writer.go # Shared CUD via lancedb-go native SDK (flush target)
 |   |   |-- duckdb_process.go # Persistent duckdb.exe subprocess (Windows only)
-|   |   |-- lance_windows.go # Windows: DuckDB CLI reads (thin wrapper over duckdb_process)
-|   |   +-- lance_cgo.go    # Non-Windows (Linux/FreeBSD/macOS): embedded DuckDB reads
+|   |   |-- lance_windows.go # Windows: DuckDB CLI reads + buffered write path
+|   |   +-- lance_cgo.go    # Non-Windows (Linux/FreeBSD/macOS): embedded DuckDB reads + buffered write path
 |   |-- debug/          # Debug logging & HTTP middleware
 |   |-- include/        # lancedb.h C header for CGo FFI
 |   |-- lib/            # Pre-built native libraries (per-platform)

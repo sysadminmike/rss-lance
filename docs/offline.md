@@ -1,6 +1,8 @@
-# Offline Mode
+# Offline Mode / Buffered Writes
 
-Offline mode lets the Go server keep working when the Lance data source (NFS share, S3 bucket, remote mount) becomes temporarily unreachable. "Offline" means the server can't read or write Lance files -- the machine itself may still be on a network.
+The Go server uses a local DuckDB file (`offline_cache.db`) as a write buffer and offline cache. This is **always active** -- there is no toggle. All user writes (mark read, star, settings changes) are buffered through a `pending_changes` table in DuckDB first, then flushed to Lance every 30 seconds by a background goroutine.
+
+When the Lance data source (NFS share, S3 bucket, remote mount) becomes unreachable, the server continues working: reads fall back to cached data and writes accumulate in the buffer until the connection returns.
 
 Useful for:
 
@@ -8,18 +10,29 @@ Useful for:
 - NFS/Samba shares that go down for maintenance
 - S3 outages or credential expiry
 - Storage server reboots
+- Normal operation (write buffering reduces Lance write amplification)
 
 ---
 
 ## How It Works
 
-### Normal Mode
+### Normal Mode (online)
 
 ```
-Browser --> Go server --> DuckDB --> Lance tables (remote or local)
+Browser --> Go server --> in-memory write cache (CTE overlay)
+                              |
+                              +--> DuckDB pending_changes (buffered writes)
+                              |        |
+                              |        +--> flush to Lance every 30s
+                              |
+                              +--> DuckDB reads --> Lance tables
 ```
 
-### Offline Mode
+All writes go through two layers:
+1. **In-memory write cache** (`cache.go`) -- overlays read/star changes onto DuckDB query results via SQL CTEs so changes are visible immediately
+2. **DuckDB pending_changes** (`offline_cache.go`) -- persists all changes to disk so they survive server restarts; flushed to Lance every 30 seconds
+
+### Offline Mode (Lance unreachable)
 
 ```
 Browser --> Go server --> local DuckDB cache (offline_cache.db)
@@ -27,29 +40,26 @@ Browser --> Go server --> local DuckDB cache (offline_cache.db)
                               +-- pending_changes table (replayed on reconnect)
 ```
 
-While online, a background goroutine periodically snapshots recent data from Lance into a local DuckDB file (`offline_cache.db`). When Lance becomes unreachable, all reads fall back to this cache and all writes are recorded in a `pending_changes` table. When the connection returns, queued changes are replayed back to Lance.
+When Lance becomes unreachable, reads fall back to cached snapshots and writes continue accumulating in `pending_changes`. When the connection returns, queued changes are replayed.
 
 ---
 
-## Enabling Offline Mode
+## Configuration
 
-Open the browser UI, go to **Other → Settings**, and toggle **Offline Mode** on. The settings are:
+The offline/buffering system starts automatically. Snapshot and cache settings are stored in the `settings` Lance table (editable via **Other -> Settings** in the UI):
 
 | Setting | Default | Description |
 |---|---|---|
-| Enabled | Off | Master toggle -- nothing happens until this is on |
 | Snapshot interval (minutes) | 10 | How often to refresh the local cache while online |
 | Article days | 7 | How many days of articles to cache (by `updated_at`) |
-
-These are stored in the `settings` Lance table and take effect immediately -- no server restart needed.
 
 The cache file path defaults to `./data/offline_cache.db` and can be changed via the `offline_cache_path` setting key if needed.
 
 ---
 
-## Snapshot (Online → Cache)
+## Snapshot (Online -> Cache)
 
-While online and enabled, a background goroutine runs on the configured interval and copies:
+While online, a background goroutine runs on the configured interval and copies:
 
 | Data | Scope |
 |---|---|
@@ -75,9 +85,9 @@ When the health probe fails, `isOffline` is set to true and all subsequent reads
 
 ---
 
-## Reading While Offline
+## Reading (Online + Offline)
 
-All Store read methods transparently fall back to the DuckDB cache:
+All Store read methods use a two-layer overlay: in-memory write cache (CTE) on top of DuckDB/Lance queries. When offline, reads transparently fall back to the local DuckDB cache:
 
 | Endpoint | Reads from cache |
 |---|---|
@@ -93,12 +103,12 @@ API handlers don't know whether they're serving live or cached data. The fallbac
 
 ---
 
-## Writing While Offline
+## Writing (Buffered Path)
 
-User actions while offline are recorded in two places:
+All user write actions are buffered through two layers:
 
-1. **Local cache update** -- the `cached_articles` or `cached_settings` row is updated immediately so subsequent reads reflect the change.
-2. **Pending changes log** -- the action is appended to the `pending_changes` DuckDB table for later replay.
+1. **In-memory write cache** (`cache.go`) -- the `cached_articles` or `cached_settings` row is updated immediately so subsequent reads reflect the change via CTE overlay.
+2. **DuckDB pending changes** (`offline_cache.go`) -- the action is appended to the `pending_changes` DuckDB table. A background goroutine flushes pending changes to Lance every 30 seconds while online. While offline, changes accumulate until reconnection.
 
 Supported offline write actions:
 
@@ -116,9 +126,9 @@ Supported offline write actions:
 
 ---
 
-## Reconnection & Replay
+## Flush & Replay
 
-When the health probe detects that Lance is reachable again:
+While online, a background goroutine (`runPendingFlush`) runs every 30 seconds and flushes pending changes to Lance. When coming back from offline, the same process replays accumulated changes:
 
 1. Read all rows from `pending_changes` ordered by ID
 2. Collapse article changes per `article_id` to a final state (read and star are independent)
@@ -154,20 +164,8 @@ The local DuckDB file (`offline_cache.db`) contains 6 tables:
 
 Returns the current offline state. Polled by the frontend every 30 seconds.
 
-**When offline mode is disabled:**
-
 ```json
 {
-  "enabled": false,
-  "offline": false
-}
-```
-
-**When enabled:**
-
-```json
-{
-  "enabled": true,
   "offline": false,
   "pending_changes": 0,
   "pending_logs": 0,
@@ -178,9 +176,8 @@ Returns the current offline state. Polled by the frontend every 30 seconds.
 
 | Field | Type | Description |
 |---|---|---|
-| `enabled` | bool | Whether offline mode is turned on in settings |
 | `offline` | bool | Whether the server is currently in offline mode |
-| `pending_changes` | int | Number of queued writes waiting to replay |
+| `pending_changes` | int | Number of queued writes waiting to flush/replay |
 | `pending_logs` | int | Number of log entries in `cached_logs` waiting to drain back to Lance |
 | `last_snapshot` | string | ISO 8601 timestamp of the last successful snapshot |
 | `cache_articles` | int | Number of articles in the local cache |
@@ -204,7 +201,6 @@ All offline settings are stored in the `settings` Lance table (same as all other
 
 | Key | Default | Description |
 |---|---|---|
-| `offline_enabled` | `false` | Master toggle |
 | `offline_snapshot_interval_mins` | `10` | Snapshot interval in minutes |
 | `offline_article_days` | `7` | Days of articles to cache (by `updated_at`) |
 | `offline_cache_path` | `./data/offline_cache.db` | Path to the local DuckDB cache file |
@@ -215,16 +211,17 @@ All offline settings are stored in the `settings` Lance table (same as all other
 
 | File | Role |
 |---|---|
-| `server/db/offline_cache.go` | Cache manager -- DuckDB file ops, snapshot, pending changes, replay, eviction |
-| `server/db/lance_windows.go` | Windows Store -- offline fallback wrappers on all read/write methods |
-| `server/db/lance_cgo.go` | Linux/FreeBSD Store -- same fallback wrappers |
+| `server/db/offline_cache.go` | Cache manager -- DuckDB file ops, snapshot, pending changes, flush/replay, eviction |
+| `server/db/cache.go` | In-memory write cache -- CTE overlay for immediate read visibility of pending changes |
+| `server/db/lance_windows.go` | Windows Store -- buffered write path + offline fallback on all read/write methods |
+| `server/db/lance_cgo.go` | Linux/FreeBSD Store -- same buffered write path + offline fallback |
 | `server/db/fscheck_windows.go` | Windows local-FS detection (GetDriveTypeW) |
 | `server/db/fscheck_other.go` | Non-Windows local-FS detection (statfs) |
 | `server/db/fscheck_linux.go` | Linux statfs magic-number check |
 | `server/db/fscheck_bsd.go` | FreeBSD/macOS Fstypename check |
 | `server/api/offline_status.go` | `GET /api/offline-status` endpoint |
 | `frontend/js/app.js` | Offline status polling and banner display |
-| `frontend/js/settings-page.js` | Offline Mode settings UI section |
+| `frontend/js/settings-page.js` | Offline cache settings UI section |
 | `frontend/css/style.css` | Offline banner styling |
 
 ---

@@ -513,6 +513,9 @@ Examples:
 "@ -ForegroundColor Yellow
 }
 
+# Ensure data directory exists for every command (tests, server, etc. may need it)
+New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+
 switch ($Command) {
     "setup"      { Setup }
     "server"     { Build-Server }

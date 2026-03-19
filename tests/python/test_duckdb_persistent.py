@@ -35,14 +35,26 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent.parent
 DUCKDB_BIN = ROOT / "tools" / "duckdb.exe"
 DATA_PATH = ROOT / "data"
 DB_PATH = str(DATA_PATH / "server.duckdb")
 
+# Skip entire module if prerequisites are missing (e.g. git worktree with no data/)
+_skip_reason = None
 if not DUCKDB_BIN.exists():
-    print(f"ERROR: {DUCKDB_BIN} not found")
-    sys.exit(1)
+    _skip_reason = f"duckdb.exe not found at {DUCKDB_BIN}"
+elif not DATA_PATH.exists():
+    _skip_reason = f"data/ directory not found at {DATA_PATH}"
+elif not (DATA_PATH / "server.duckdb").exists():
+    _skip_reason = f"server.duckdb not found at {DATA_PATH / 'server.duckdb'}"
+elif not (DATA_PATH / "feeds.lance").exists() or not (DATA_PATH / "articles.lance").exists():
+    _skip_reason = f"Lance tables not found in {DATA_PATH} (need feeds.lance + articles.lance)"
+
+if _skip_reason:
+    pytest.skip(_skip_reason, allow_module_level=True)
 
 
 def section(name):

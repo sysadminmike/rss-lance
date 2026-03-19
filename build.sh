@@ -428,6 +428,9 @@ Examples:
 EOF
 }
 
+# Ensure data directory exists for every command (tests, server, etc. may need it)
+mkdir -p "$DATA_DIR"
+
 case "${1:-help}" in
     setup)       cmd_setup ;;
     server)      cmd_server ;;
