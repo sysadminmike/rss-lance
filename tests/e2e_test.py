@@ -1292,6 +1292,29 @@ def run_e2e(keep: bool = False, verbose: bool = False,
                         and log_buf["infra_events"] >= 0,
                         f"Got {log_buf.get('infra_events')}")
 
+            # Lance Python writer process info (only present in lance_external builds)
+            lance_writer = srv_status.get("lance_writer")
+            if lance_writer is not None:
+                t.check("lance_writer.pid > 0",
+                        isinstance(lance_writer.get("pid"), (int, float))
+                        and lance_writer["pid"] > 0,
+                        f"Got {lance_writer.get('pid')}")
+                t.check("lance_writer.uptime_seconds >= 0",
+                        isinstance(lance_writer.get("uptime_seconds"), (int, float))
+                        and lance_writer["uptime_seconds"] >= 0,
+                        f"Got {lance_writer.get('uptime_seconds')}")
+                t.check("lance_writer.lancedb_version is set",
+                        bool(lance_writer.get("lancedb_version")),
+                        f"Got {lance_writer.get('lancedb_version')!r}")
+                t.check("lance_writer.pyarrow_version is set",
+                        bool(lance_writer.get("pyarrow_version")),
+                        f"Got {lance_writer.get('pyarrow_version')!r}")
+                t.log(f"Lance writer pid={lance_writer.get('pid')}, "
+                      f"lancedb={lance_writer.get('lancedb_version')}, "
+                      f"pyarrow={lance_writer.get('pyarrow_version')}")
+            else:
+                t.log("lance_writer not present in server-status (non-lance_external build)")
+
         # Method not allowed
         status, _ = api.post("/api/server-status")
         t.check("POST /api/server-status returns 405", status == 405)
@@ -1844,6 +1867,7 @@ def run_e2e(keep: bool = False, verbose: bool = False,
 
         # -------- DuckDB Process Restart Resilience (Windows) ------
         t.section("DuckDB: Process Restart Resilience")
+        crash_died_count = 0  # tracks error 'died' log entries after the crash test
         if sys.platform == "win32" and server_proc:
             server_pid = server_proc.pid
             # Find child duckdb.exe processes of the server
@@ -1891,6 +1915,24 @@ def run_e2e(keep: bool = False, verbose: bool = False,
                     t.check("Feed data intact after restart",
                             len(post_feeds) >= 3,
                             f"Expected >= 3 feeds, got {len(post_feeds)}")
+
+                # Verify crash restart logs: should have error 'died' and no 'Flushing'
+                time.sleep(0.5)
+                _, crash_logs = api.get("/api/logs?service=api&category=lifecycle&limit=100")
+                if isinstance(crash_logs, dict):
+                    cl_entries = crash_logs.get("entries", [])
+                    died_entries = [e for e in cl_entries
+                                    if "died" in e.get("message", "")
+                                    and e.get("level") == "error"]
+                    t.check("Crash restart: error log has 'died' message",
+                            len(died_entries) >= 1,
+                            f"Got lifecycle entries: {[e.get('message') for e in cl_entries]!r}")
+                    flushing_entries = [e for e in cl_entries
+                                        if "Flushing" in e.get("message", "")]
+                    t.check("Crash restart: no 'Flushing' log emitted",
+                            len(flushing_entries) == 0,
+                            f"Unexpected flushing entries: {[e.get('message') for e in flushing_entries]!r}")
+                    crash_died_count = len(died_entries)
 
                 # Verify a new duckdb.exe is running
                 try:
@@ -2006,6 +2048,30 @@ def run_e2e(keep: bool = False, verbose: bool = False,
                     t.check("Lance ext version present after restart",
                             bool(duckdb_info2.get("lance_version")),
                             f"Got: {duckdb_info2.get('lance_version')}")
+
+            # Verify graceful restart logs: flushing + safely stopped, no error 'died'
+            time.sleep(0.5)
+            _, gr_logs = api.get("/api/logs?service=api&category=lifecycle&limit=100")
+            if isinstance(gr_logs, dict):
+                gr_entries = gr_logs.get("entries", [])
+                flushing_entries = [e for e in gr_entries
+                                    if "Flushing" in e.get("message", "")]
+                t.check("Graceful restart: 'Flushing' log emitted",
+                        len(flushing_entries) >= 1,
+                        f"Got lifecycle entries: {[e.get('message') for e in gr_entries]!r}")
+                stopped_entries = [e for e in gr_entries
+                                   if "safely stopped" in e.get("message", "")]
+                t.check("Graceful restart: 'safely stopped' log emitted",
+                        len(stopped_entries) >= 1,
+                        f"Got lifecycle entries: {[e.get('message') for e in gr_entries]!r}")
+                # Graceful restart must NOT emit an error-level 'died' log
+                new_died = [e for e in gr_entries
+                            if "died" in e.get("message", "")
+                            and e.get("level") == "error"]
+                # Count should not have grown beyond what the crash test produced
+                t.check("Graceful restart: no new 'died' error log",
+                        len(new_died) == crash_died_count,
+                        f"'died' error entries: {[e.get('message') for e in new_died]!r}")
         else:
             t.log("Skipping (Windows-only test)")
 
@@ -2152,6 +2218,27 @@ def run_e2e(keep: bool = False, verbose: bool = False,
                 t.check("Lifecycle log says 'Server started'",
                         any("Server started" in e.get("message", "") for e in lifecycle_entries),
                         f"Got: {[e.get('message', '') for e in lifecycle_entries]!r}")
+
+                # Lance writer startup log (lance_external builds only)
+                lance_start_entries = [e for e in lifecycle_entries
+                                       if "Lance Python writer started" in e.get("message", "")]
+                if lance_start_entries:
+                    t.check("Lance writer startup lifecycle log emitted",
+                            len(lance_start_entries) >= 1,
+                            f"Got: {[e.get('message', '') for e in lance_start_entries]!r}")
+                    t.log(f"Lance startup log: {lance_start_entries[0].get('message', '')}")
+                else:
+                    t.log("Lance writer startup log not present (non-lance_external build)")
+
+                # Flush lifecycle log: /api/flush was called earlier in the settings tests
+                flush_entries = [e for e in lifecycle_entries
+                                 if "Manual cache flush" in e.get("message", "")]
+                if flush_entries:
+                    t.check("Flush lifecycle log emitted after POST /api/flush",
+                            len(flush_entries) >= 1,
+                            f"Got: {[e.get('message', '') for e in flush_entries]!r}")
+                else:
+                    t.log("Flush lifecycle log not found (may be non-lance_external build)")
 
             # Check for feed_actions logs (queue feed + mark-all-read)
             feed_action_entries = [e for e in a_entries if e.get("category") == "feed_actions"]

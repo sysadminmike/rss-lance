@@ -314,7 +314,7 @@ func (d *duckDBProcess) query(sql string) ([]map[string]any, error) {
 
 	if !d.alive {
 		debug.Log(debug.DuckDB, "Process dead, restarting before query")
-		if err := d.restart(); err != nil {
+		if err := d.restart(false); err != nil {
 			return nil, fmt.Errorf("duckdb process dead and restart failed: %w", err)
 		}
 	}
@@ -328,7 +328,7 @@ func (d *duckDBProcess) query(sql string) ([]map[string]any, error) {
 		log.Printf("ERROR: DuckDB process query failed (%v), attempting restart", err)
 		d.emitLog("error", fmt.Sprintf("DuckDB process query failed: %v, attempting restart", err))
 		d.alive = false
-		if restartErr := d.restart(); restartErr != nil {
+		if restartErr := d.restart(false); restartErr != nil {
 			log.Printf("ERROR: DuckDB process restart failed after query error: %v", restartErr)
 			d.emitLog("error", fmt.Sprintf("DuckDB process restart failed after query error: %v", restartErr))
 			return nil, fmt.Errorf("duckdb query failed and restart failed: query=%w, restart=%w", err, restartErr)
@@ -357,7 +357,7 @@ func (d *duckDBProcess) execStmt(sql string) error {
 
 	if !d.alive {
 		debug.Log(debug.DuckDB, "Process dead, restarting before exec")
-		if err := d.restart(); err != nil {
+		if err := d.restart(false); err != nil {
 			return fmt.Errorf("duckdb process dead and restart failed: %w", err)
 		}
 	}
@@ -370,7 +370,7 @@ func (d *duckDBProcess) execStmt(sql string) error {
 		log.Printf("ERROR: DuckDB process exec failed (%v), attempting restart", err)
 		d.emitLog("error", fmt.Sprintf("DuckDB process exec failed: %v, attempting restart", err))
 		d.alive = false
-		if restartErr := d.restart(); restartErr != nil {
+		if restartErr := d.restart(false); restartErr != nil {
 			log.Printf("ERROR: DuckDB process restart failed after exec error: %v", restartErr)
 			d.emitLog("error", fmt.Sprintf("DuckDB process restart failed after exec error: %v", restartErr))
 			return fmt.Errorf("duckdb exec failed and restart failed: exec=%w, restart=%w", err, restartErr)
@@ -431,7 +431,9 @@ func (d *duckDBProcess) sendAndRead(sql string) ([]map[string]any, error) {
 }
 
 // restart kills the current process and starts a fresh one.
-func (d *duckDBProcess) restart() error {
+// graceful=true is used for intentional restarts (API-triggered); graceful=false
+// is used when a crash is detected and the process needs to be recovered.
+func (d *duckDBProcess) restart(graceful bool) error {
 	d.restartMu.Lock()
 	defer d.restartMu.Unlock()
 
@@ -440,9 +442,17 @@ func (d *duckDBProcess) restart() error {
 		return nil
 	}
 
-	log.Printf("ERROR: DuckDB persistent process died -- restarting...")
-	d.emitLog("error", "DuckDB persistent process died -- restarting")
-	d.kill()
+	if graceful {
+		log.Printf("Flushing DuckDB write cache and stopping process")
+		d.emitLog("info", "Flushing DuckDB write cache and stopping process")
+		d.kill()
+		log.Printf("DuckDB process safely stopped")
+		d.emitLog("info", "DuckDB process safely stopped")
+	} else {
+		log.Printf("ERROR: DuckDB persistent process died -- restarting...")
+		d.emitLog("error", "DuckDB persistent process died -- restarting")
+		d.kill()
+	}
 
 	if err := d.start(); err != nil {
 		d.emitLog("error", fmt.Sprintf("DuckDB restart failed: %v", err))
@@ -490,7 +500,7 @@ func (d *duckDBProcess) gracefulRestart() error {
 	d.emitLog("info", "Graceful DuckDB restart requested")
 	d.alive = false
 	d.stoppedForUpgrade = false
-	return d.restart()
+	return d.restart(true)
 }
 
 // stopForUpgrade acquires the query mutex (waiting for any running query
@@ -523,7 +533,7 @@ func (d *duckDBProcess) startAfterUpgrade() error {
 	log.Printf("DuckDB start after upgrade requested")
 	d.emitLog("info", "DuckDB start after upgrade requested")
 	d.stoppedForUpgrade = false
-	return d.restart()
+	return d.restart(true)
 }
 
 // pid returns the PID of the running duckdb.exe process, or 0 if not running.

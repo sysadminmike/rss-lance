@@ -137,17 +137,28 @@ The server has two DuckDB integration modes controlled by Go build tags:
 | **Embedded** (default on Linux/macOS) | _(none)_ | `lance_cgo.go` | DuckDB compiled into binary via `go-duckdb` CGo package. Fastest. |
 | **External CLI** (default on Windows) | `duckdb_cli` or Windows OS | `lance_windows.go` + `duckdb_process.go` | DuckDB runs as a separate subprocess. Used when embedded CGo compilation fails. |
 
-Build tag rules for the key files:
+### Lance Write Modes and Build Tags
+
+The server has two Lance write implementations, selected by the `lance_external` build tag:
+
+| Mode | Build Tag | Files Used | Description |
+|---|---|---|---|
+| **Embedded** (default on Linux/macOS) | _(none)_ | `lance_writer.go` | Writes via lancedb-go native Rust SDK (CGo). Requires `liblancedb_go.a`. |
+| **External sidecar** (default on Windows) | `lance_external` | `lance_process.go` + `tools/lance_writer.py` | Writes via persistent Python subprocess (JSON lines protocol on stdin/stdout). No native library needed. |
+
+### Build Tag Rules
 
 | File | Build Constraint | Active When |
 |---|---|---|
 | `lance_cgo.go` | `!windows && !duckdb_cli` | Linux/macOS without `duckdb_cli` tag |
 | `lance_windows.go` | `windows \|\| duckdb_cli` | Windows always, or any OS with `-tags duckdb_cli` |
 | `duckdb_process.go` | `windows \|\| duckdb_cli` | Same as `lance_windows.go` |
+| `lance_writer.go` | `!lance_external` | Default (native lancedb-go writes) |
+| `lance_process.go` | `lance_external` | External Python sidecar writes |
 
-CGo is required in **both** modes because `lance_writer.go` (shared write path) uses `lancedb-go` which links against `liblancedb_go.a`. The `duckdb_cli` tag only excludes the embedded `go-duckdb` package (DuckDB engine), not the lancedb-go native library.
+When Lance is embedded (`lance_writer.go`), CGo is required because `lancedb-go` links against `liblancedb_go.a`. When Lance is external (`lance_process.go`), CGo is only needed if DuckDB is also embedded.
 
-On Linux/macOS, `build.sh server` tries embedded mode first, then falls back to external mode automatically. Use `--force-embedded` or `--force-external` to override. See `docs/building.md` for details.
+On Linux/macOS, `build.sh server` tries embedded mode first for both DuckDB and Lance, then falls back to external automatically. Use `--duckdb-embedded`/`--duckdb-external` and `--lance-embedded`/`--lance-external` to override. On Windows, DuckDB is always external; Lance defaults to external but can opt in to embedded with `-LanceEmbedded`. See `docs/building.md` for the full comparison.
 
 ### Rebuilding the Native Library from Rust Source
 
@@ -319,6 +330,12 @@ The 7 expected failures are:
   filtering that may see 0 cached articles depending on timing. These tests need updating
   to match the new always-active offline architecture.
 
+- **Transient log-check failures (0-1 per run):** Some E2E checks query `/api/logs` to
+  verify that a log entry was written. Because log writes are buffered and flushed
+  asynchronously, a single log check may occasionally fail on a slow machine or under
+  load. If you see exactly one log-related failure that passes on the next run, it is a
+  timing issue -- not a real bug. Do not spend time chasing it down.
+
 **5. Cleanup when done:**
 ```powershell
 cd ..\rss-lance
@@ -343,7 +360,8 @@ rss-lance/
 |   |   |-- cache.go        # In-memory write cache + CTE overlay for immediate read visibility
 |   |   |-- offline_cache.go # DuckDB pending_changes buffer + offline snapshot cache
 |   |   |-- logbuffer.go    # Buffered log writer (batch flush)
-|   |   |-- lance_writer.go # Shared CUD via lancedb-go native SDK (flush target)
+|   |   |-- lance_writer.go # CUD via lancedb-go native SDK (default, !lance_external)
+|   |   |-- lance_process.go # CUD via Python sidecar (lance_external build tag)
 |   |   |-- duckdb_process.go # Persistent DuckDB subprocess (Windows + duckdb_cli build tag)
 |   |   |-- lance_windows.go # DuckDB CLI reads + buffered write path (Windows + duckdb_cli build tag)
 |   |   +-- lance_cgo.go    # Embedded DuckDB reads + buffered write path (non-Windows, excluded by duckdb_cli tag)

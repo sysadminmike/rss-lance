@@ -1,5 +1,8 @@
 # Offline Mode / Buffered Writes
 
+For detailed ASCII diagrams of online/offline data flow, graceful degradation,
+and the 3-tier log buffering architecture, see [architecture.md](architecture.md).
+
 The Go server uses a local DuckDB file (`offline_cache.db`) as a write buffer and offline cache. This is **always active** -- there is no toggle. All user writes (mark read, star, settings changes) are buffered through a `pending_changes` table in DuckDB first, then flushed to Lance every 30 seconds by a background goroutine.
 
 When the Lance data source (NFS share, S3 bucket, remote mount) becomes unreachable, the server continues working: reads fall back to cached data and writes accumulate in the buffer until the connection returns.

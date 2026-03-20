@@ -251,6 +251,7 @@ func main() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		serverLogger.Log("info", "lifecycle", "Manual cache flush requested via API", "")
 		store.FlushPendingChanges()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"ok": true})

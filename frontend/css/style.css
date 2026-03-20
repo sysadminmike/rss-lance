@@ -1529,6 +1529,7 @@ tr.log-level-warn { background: rgba(224, 144, 48, 0.03); }
   background: var(--bg2);
   color: var(--text);
   cursor: pointer;
+  align-self: flex-end;
 }
 .tv-btn:hover {
   background: var(--bg3);

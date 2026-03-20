@@ -166,6 +166,9 @@ func Open(dataPath string, duckdbPath ...string) (Store, error) {
 		return nil, fmt.Errorf("lance writer: %w", err)
 	}
 	s.writer = w
+	s.writer.logFn = func(entry LogEntry) { s.WriteLog(entry) }
+	s.writer.emitLog("info", fmt.Sprintf("Lance Python writer started (pid %d), lancedb %s, pyarrow %s",
+		s.writer.pid(), s.writer.lancedbVersion, s.writer.pyarrowVersion))
 
 	// Read cache/buffer settings from the settings table (falls back to
 	// compiled defaults when the table doesn't exist yet — first boot).
@@ -595,11 +598,17 @@ func (s *cliStore) FlushPendingChanges() {
 	count, err := s.offCache.Replay(s.writer)
 	if err != nil {
 		debug.Log(debug.Lance, "pending flush error: %v", err)
+		if s.writer != nil {
+			s.writer.emitLog("error", fmt.Sprintf("Flush pending changes failed: %v", err))
+		}
 		return
 	}
 	if count > 0 {
 		s.cache.clear()
 		debug.Log(debug.Lance, "pending flush: %d changes committed to Lance", count)
+		if s.writer != nil {
+			s.writer.emitLog("info", fmt.Sprintf("Flushed %d pending changes to Lance", count))
+		}
 	}
 }
 
@@ -1345,6 +1354,9 @@ func (s *cliStore) logTableExists(name string) bool {
 }
 
 func (s *cliStore) WriteLog(entry LogEntry) error {
+	if s.logBuf == nil {
+		return nil
+	}
 	s.logBuf.add(entry)
 	return nil
 }

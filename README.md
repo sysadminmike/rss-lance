@@ -133,6 +133,8 @@ Open **http://127.0.0.1:8080**.
 
 The `all` command sets up the Python venv, downloads DuckDB, builds the Go server, and inserts demo feeds. After `fetch-once` populates articles, the server is ready to use.
 
+> Both DuckDB and LanceDB can be compiled into the server binary or run as separate processes -- see [docs/building.md](docs/building.md#duckdb-and-lance-build-modes).
+
 > **Minimal build:** If you just want the bare minimum to run the app (no tests, no demo data, no Node.js), use `minimum` instead of `all`:
 > ```powershell
 > .\build.ps1 minimum   # Windows

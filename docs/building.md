@@ -65,42 +65,91 @@ If omitted, the scripts default to their own directory.
 |---|---|---|
 | `-NoTests` | Windows | Skip tests when running `all`: `.\build.ps1 -NoTests all` |
 | `--no-tests` | Linux/macOS | Skip tests when running `all`: `./build.sh --no-tests all` |
-| `--force-embedded` | Linux/macOS | Build only with embedded DuckDB (CGo); fail if compilation fails |
-| `--force-external` | Linux/macOS | Build only with external DuckDB CLI process; skip embedded attempt |
+| `--duckdb-embedded` | Linux/macOS | Build only with embedded DuckDB (CGo); fail if compilation fails |
+| `--duckdb-external` | Linux/macOS | Skip embedded DuckDB; always use external CLI process |
+| `--lance-embedded` | Linux/macOS | Build only with embedded lancedb-go (Rust native via CGo) |
+| `--lance-external` | Linux/macOS | Build with external Lance writer (Python sidecar); no native lib needed |
+| `-LanceEmbedded` | Windows | Opt in to embedded lancedb-go (requires MSYS2 GCC) |
+| `-LanceExternal` | Windows | Use external Lance sidecar (default on Windows; explicit override) |
+
+> **Deprecated aliases:** `--force-embedded` and `--force-external` still work but are deprecated; use `--duckdb-embedded` / `--duckdb-external` instead.
 
 Tests are **enabled by default** in the `all` command.
 
-### DuckDB Build Modes (Linux/macOS)
+### DuckDB and Lance Build Modes
 
-The `server` command supports two DuckDB integration modes:
+The server embeds two native libraries at compile time -- **DuckDB** (SQL query engine) and **LanceDB** (columnar vector store). Each can be built in embedded or external mode independently, giving you control over binary size, runtime dependencies, and upgrade flexibility.
 
-| Mode | Description |
-|---|---|
-| **Embedded** (default) | DuckDB is compiled into the binary via CGo (`go-duckdb`). Fastest at runtime. Requires GCC and working CGo environment. |
-| **External** | DuckDB runs as a separate CLI process (`tools/duckdb`). Used on Windows by default. Available on Linux/macOS as a fallback when embedded compilation fails. |
+#### DuckDB Integration
 
-**Default behavior:** The build script tries embedded mode first. If CGo compilation fails (missing GCC, incompatible libraries, etc.), it automatically falls back to external mode and downloads the DuckDB CLI binary.
+| Mode | Default on | Server binary | Runtime files | Description |
+|---|---|---|---|---|
+| **Embedded** | Linux / macOS | ~35-45 MB larger | None | DuckDB engine compiled into the binary via CGo (`go-duckdb`). Fastest at runtime. Requires GCC. |
+| **External** | Windows (always) | ~35-45 MB smaller | `tools/duckdb` (~35-45 MB) | DuckDB runs as a separate CLI subprocess. Total disk usage is roughly the same -- the engine moves from inside the binary to `tools/duckdb`. |
 
-**Override flags:**
-- `--force-embedded` - Only try embedded mode; exit with error if it fails (no fallback)
-- `--force-external` - Skip embedded mode entirely; build with external DuckDB process
+> **Windows:** Embedded DuckDB is not currently supported on Windows. The external CLI process is always used.
+
+**Default behavior on Linux/macOS:** The build script tries embedded mode first. If CGo compilation fails (missing GCC, incompatible libraries, etc.), it automatically falls back to external mode and downloads the DuckDB CLI binary.
 
 ```bash
-# Default: try embedded, fall back to external automatically
+# Default: try embedded DuckDB, fall back to external automatically
 ./build.sh server
 
-# Force external DuckDB process mode
-./build.sh --force-external server
+# Force external DuckDB process
+./build.sh --duckdb-external server
 
-# Force embedded only (no fallback)
-./build.sh --force-embedded server
+# Force embedded DuckDB only (no fallback)
+./build.sh --duckdb-embedded server
 ```
 
-When building with external mode, the DuckDB CLI binary is downloaded automatically into `tools/` if not already present. The server requires this binary at runtime.
+When building with external DuckDB, the CLI binary is downloaded automatically into `tools/` if not already present. The server requires this binary at runtime.
 
-> **Upgrade without rebuilding:** A key advantage of external mode is that you can upgrade DuckDB by simply replacing the `tools/duckdb` binary. Use the **Stop for Upgrade** button on the Server Status page (or `POST /api/duckdb/stop`) to flush the write cache and stop DuckDB safely. Then replace the binary and click **Start DuckDB** (or `POST /api/duckdb/start`). The Go server does not need to be recompiled or restarted -- the new DuckDB version and Lance extension version are detected automatically on each process start. **Note:** The upgrade cannot be started while the server is offline, because the write cache flush requires Lance to be reachable.
+> **Upgrade without rebuilding:** A key advantage of external DuckDB is that you can upgrade by simply replacing the `tools/duckdb` binary. Use the **Stop for Upgrade** button on the Server Status page (or `POST /api/duckdb/stop`) to flush the write cache and stop DuckDB safely. Then replace the binary and click **Start DuckDB** (or `POST /api/duckdb/start`). The Go server does not need to be recompiled or restarted -- the new DuckDB version and Lance extension version are detected automatically on each process start. **Note:** The upgrade cannot be started while the server is offline, because the write cache flush requires Lance to be reachable.
 
 At build time, the DuckDB CLI version and Lance extension version are captured and baked into the server binary. These appear in the `/api/server-status` response under `server.build_duckdb_version` and `server.build_lance_ext_version`.
+
+#### LanceDB Integration
+
+| Mode | Default on | Server binary | Runtime files | Description |
+|---|---|---|---|---|
+| **Embedded** | Linux / macOS | ~80-120 MB larger | None | LanceDB Rust SDK (`lancedb-go`) linked statically at compile time. No external process at runtime. Requires GCC and the pre-built `liblancedb_go.a`. |
+| **External (sidecar)** | Windows (default) | ~80-120 MB smaller | `tools/lance_writer.py` + Python `.venv` | A persistent Python subprocess handles all Lance write operations. The Go server communicates with it over stdin/stdout (JSON lines protocol). No native library needed at compile time. |
+
+On Windows, the external Lance sidecar is the default because GCC and the native library add build complexity. Use `-LanceEmbedded` to opt in to the native library (requires MSYS2 GCC).
+
+On Linux/macOS, if embedded DuckDB CGo compilation fails, Lance also automatically switches to external mode (since CGo is unavailable for both).
+
+```bash
+# Linux/macOS: default (embedded Lance)
+./build.sh server
+
+# Linux/macOS: external Lance sidecar
+./build.sh --lance-external server
+
+# Linux/macOS: force embedded Lance only (no fallback)
+./build.sh --lance-embedded server
+```
+
+```powershell
+# Windows: default is external Lance sidecar
+.\build.ps1 server
+
+# Windows: opt in to embedded lancedb-go (needs MSYS2 GCC)
+.\build.ps1 -LanceEmbedded server
+```
+
+#### Combined Mode Reference
+
+The four real-world combinations and their trade-offs:
+
+| DuckDB | Lance | Default on | How to select | Server binary | Extra runtime files |
+|---|---|---|---|---|---|
+| Embedded | Embedded | Linux / macOS | `./build.sh server` | Largest (~115-165 MB added) | None -- fully self-contained |
+| Embedded | External | Linux / macOS | `./build.sh --lance-external server` | ~35-45 MB added | `tools/lance_writer.py` + `.venv` |
+| External | External | Windows | `.\build.ps1 server` | Smallest server binary | `tools/duckdb` + `tools/lance_writer.py` + `.venv` |
+| External | Embedded | Windows + Linux/macOS | `.\build.ps1 -LanceEmbedded server` / `./build.sh --duckdb-external --lance-embedded server` | ~80-120 MB added | `tools/duckdb` |
+
+> **Size note:** Binary size differences are approximate and vary by platform and DuckDB/Lance version. The LanceDB component (~80-120 MB) dominates; the DuckDB engine add-on (~35-45 MB) is secondary. Total bytes on disk are roughly equal across all modes -- the components simply move between inside the binary and alongside it.
 
 ### Minimal Build
 

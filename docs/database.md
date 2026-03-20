@@ -1,5 +1,9 @@
 # Database Schema & Concurrency
 
+For an overview of how LanceDB and DuckDB work together (with ASCII diagrams
+of the read/write data flow, offline mode, cache layers, and the lance writer),
+see [architecture.md](architecture.md).
+
 ## Timestamp Convention
 
 All tables include `created_at` and `updated_at` columns:
@@ -232,98 +236,203 @@ files, so `rsync` / Syncthing always copies consistent data. Compare this with
 SQLite, where copying the `.db` file mid-transaction can produce a corrupt
 backup.
 
-## Entity Relationship Diagram
 
-```mermaid
-erDiagram
-    feeds {
-        string feed_id PK
-        string title
-        string url
-        string site_url
-        string icon_url
-        string category_id FK
-        string subcategory_id
-        timestamp last_fetched
-        timestamp last_article_date
-        int32 fetch_interval_mins
-        string fetch_tier
-        timestamp tier_changed_at
-        timestamp last_successful_fetch
-        int32 error_count
-        string last_error
-        timestamp created_at
-        timestamp updated_at
-    }
+## Server Database Architecture (Go Server)
 
-    articles {
-        string article_id PK
-        string feed_id FK
-        string title
-        string url
-        string author
-        string content
-        string summary
-        timestamp published_at
-        timestamp fetched_at
-        bool is_read
-        bool is_starred
-        string guid
-        int32 schema_version
-        timestamp created_at
-        timestamp updated_at
-    }
+The Go server uses a layered read/write architecture where **DuckDB serves as the
+SQL read engine and crash-safe write buffer**, while **Lance is the durable
+persistence layer that all writes ultimately land in**.
 
-    categories {
-        string category_id PK
-        string name
-        string parent_id FK
-        int32 sort_order
-        timestamp created_at
-        timestamp updated_at
-    }
-
-    pending_feeds {
-        string url PK
-        string category_id
-        timestamp requested_at
-        timestamp created_at
-        timestamp updated_at
-    }
-
-    settings {
-        string key PK
-        string value
-        timestamp created_at
-        timestamp updated_at
-    }
-
-    log_fetcher {
-        string log_id PK
-        timestamp timestamp
-        string level
-        string category
-        string message
-        string details
-        timestamp created_at
-    }
-
-    log_api {
-        string log_id PK
-        timestamp timestamp
-        string level
-        string category
-        string message
-        string details
-        timestamp created_at
-    }
-
-    feeds ||--o{ articles : "has many"
-    categories ||--o{ feeds : "groups"
-    categories ||--o{ categories : "parent"
-    pending_feeds ||--o| feeds : "becomes"
+```
+User action (mark read, star, settings)
+        │
+        ▼
+  ┌─────────────────────────────────────────────────────┐
+  │  In-Memory Write Cache (writeCache)                 │
+  │  map[article_id] → {is_read, is_starred}            │
+  │  Immediate visibility for the current request       │
+  └────────────────────────┬────────────────────────────┘
+                           │ also written synchronously
+                           ▼
+  ┌─────────────────────────────────────────────────────┐
+  │  DuckDB offline_cache.db  (pending_changes table)   │
+  │  Persistent write buffer — survives server restart  │
+  │  Queued here until Lance is reachable               │
+  └────────────────────────┬────────────────────────────┘
+                           │ flushed every 30 s (background goroutine)
+                           ▼
+  ┌─────────────────────────────────────────────────────┐
+  │  Lance tables (lancedb-go native SDK)               │
+  │  articles.lance  feeds.lance  settings.lance …      │
+  │  Source of truth — durable, MVCC-versioned files    │
+  └─────────────────────────────────────────────────────┘
 ```
 
+### DuckDB as SQL Read Engine
+
+All **reads** go through DuckDB using the Lance extension, which lets DuckDB query
+`.lance` format files directly. This gives the server full SQL — JOINs, CTEs,
+aggregations, `LIMIT`/`OFFSET` pagination — over Lance tables without loading them
+into memory.
+
+On startup, DuckDB runs:
+
+```sql
+LOAD lance;
+ATTACH IF NOT EXISTS '/path/to/data' AS _lance (TYPE LANCE);
+```
+
+Queries then reference tables as `_lance.main.articles`, `_lance.main.feeds`, etc.
+
+#### DuckDB Process Mode
+
+On Windows (and Linux/macOS when compiled with `-tags duckdb_cli`), DuckDB runs as
+a **persistent subprocess** (`duckdb.exe :memory: -json`). A background goroutine
+pipes SQL in over stdin and reads JSON results from stdout. This amortises the
+~600 ms process-startup cost across all queries; one DuckDB process handles all
+reads for the lifetime of the server.
+
+On Linux/macOS (default), DuckDB is embedded directly via **CGo** (`go-duckdb`)
+and called in-process.
+
+Both modes expose the same `Store` interface; the rest of the server has no
+visibility into which is running.
+
+### In-Memory Write Cache (Immediate Read-Your-Writes)
+
+When a user marks an article read or stars it, the state change is written to
+Lance asynchronously (every 30 seconds). To prevent the UI from flickering back
+to the old value while the flush is pending, an in-memory overlay is applied to
+every read query.
+
+`writeCache` holds a map of pending overrides:
+
+```go
+type writeCache struct {
+    pending map[string]*articleOverride // article_id → {is_read, is_starred}
+}
+```
+
+`pendingCTE()` serialises the map into a SQL CTE that DuckDB inlines at query time:
+
+```sql
+WITH _cache AS (
+    SELECT * FROM (VALUES
+        ('article-123', true,  NULL),   -- pending is_read = true
+        ('article-456', NULL,  true)    -- pending is_starred = true
+    ) AS t(article_id, is_read, is_starred)
+)
+SELECT
+    a.article_id, a.title,
+    COALESCE(c.is_read,    a.is_read)    AS is_read,
+    COALESCE(c.is_starred, a.is_starred) AS is_starred
+FROM _lance.main.articles a
+LEFT JOIN _cache c ON a.article_id = c.article_id
+WHERE ...
+```
+
+`COALESCE` prefers the in-memory cache value; if no override exists for a row the
+Lance value is used unchanged. The overlay is cleared after the next successful
+flush to Lance.
+
+### DuckDB as Crash-Safe Write Buffer
+
+The in-memory cache is not enough on its own — if the server restarts, pending
+changes would be lost. Every write is therefore also buffered into a **local DuckDB
+file** (`offline_cache.db`, configurable via `duckdb_path`) in a
+`pending_changes` table:
+
+```sql
+CREATE TABLE pending_changes (
+    id         INTEGER PRIMARY KEY,
+    article_id VARCHAR,
+    action     VARCHAR,  -- 'read' | 'unread' | 'star' | 'unstar' |
+                         -- 'mark_all_read' | 'setting'
+    value      VARCHAR,
+    timestamp  VARCHAR
+);
+```
+
+This file lives on a **local filesystem** even when Lance tables are on NFS or S3.
+DuckDB needs exclusive file locks and is unreliable on network storage; keeping
+`offline_cache.db` local avoids that constraint entirely.
+
+On restart, the server replays `pending_changes` back to Lance before accepting new
+requests, so no writes are ever silently lost.
+
+### Lance as the Persistence Layer (Writes via lancedb-go)
+
+Once the 30-second flush timer fires, `offline_cache.Replay()` collapses all
+pending changes to their final state (multiple mark-read/unread events for the same
+article reduce to one) and calls `lanceWriter`, which uses the **lancedb-go native
+SDK** to write directly to Lance tables.
+
+DuckDB's Lance extension is **read-only** from the server's perspective — it cannot
+do UPDATE with joins or subqueries. All mutations go through `lanceWriter`:
+
+| Method | Operation | Lance primitive |
+|--------|-----------|-----------------|
+| `SetArticleRead` / `SetArticleStarred` | Mark individual articles | `table.Update(filter, values)` |
+| `MarkAllRead(feedID)` | Mark all articles in a feed | `table.Update(filter, values)` |
+| `FlushOverrides(overrides)` | Batch article state flush | Grouped `table.Update` per unique payload |
+| `PutSetting(key, val)` | Write a settings row | `table.Update` |
+| `InsertLogs(entries)` | Append log rows | `table.Add(batch)` |
+
+`FlushOverrides` groups articles by identical `{is_read, is_starred}` payload to
+minimise the number of Lance write operations (and S3 PUT costs if using cloud
+storage).
+
+### Offline / Disconnected Mode
+
+If Lance becomes unreachable (NFS goes offline, S3 credentials expire, filesystem
+full), the server transitions to **offline mode** automatically and continues
+serving reads from a cached snapshot.
+
+#### Offline Detection
+
+A health probe runs every 30 seconds (5 seconds while already offline):
+
+```
+probeLance() → SELECT 1 FROM feeds LIMIT 1
+  success → if was offline: handleReconnect()
+  failure → goOffline() → mark isOffline = true
+```
+
+#### Reads While Offline
+
+When `isOffline` is true, `GetArticles`, `GetFeeds`, etc. switch to
+`offlineCache.getArticles(…)` which queries `cached_articles`, `cached_feeds`, and
+`cached_categories` tables inside `offline_cache.db`. These are populated from a
+periodic **snapshot** taken while Lance is reachable (configurable interval).
+Writes still queue into `pending_changes` as normal.
+
+#### 3-Tier Log Write Fallback
+
+Log writes use a cascading fallback chain:
+
+| Tier | Storage | When used |
+|------|---------|-----------|
+| 1 | `log_api.lance` via lancedb-go | Normal (Lance reachable) |
+| 2 | `cached_logs` table in `offline_cache.db` | Lance write fails |
+| 3 | In-process `logBuffer` ring (capped) | DuckDB also unavailable |
+
+When Lance comes back online, the server drains Tier 2 (`cached_logs`) into Lance
+automatically.
+
+#### Reconnect & Replay
+
+When the health probe detects Lance is reachable again:
+
+1. `Replay()` reads all rows from `pending_changes` in `offline_cache.db`.
+2. Collapses multi-event sequences per article/setting to final state.
+3. Flushes to Lance via `lanceWriter`.
+4. Clears `pending_changes` and the in-memory write cache.
+5. Takes a fresh snapshot of Lance data into `offline_cache.db`.
+6. Drains any logs queued in `cached_logs` to `log_api.lance`.
+
+No user interaction is required; the transition back online is fully automatic.
+
+---
 
 ## How the Fetcher Writes to DB Tables
 
@@ -431,3 +540,91 @@ Each article has a `guid` field used for deduplication. The fetcher derives it i
 2. Article `<link>` URL (usually unique per feed)
 3. **Fallback hash:** `sha1(feed_id + title + published)` -- the `feed_id` is included as a
    salt so articles from different feeds with the same title and date do not collide
+
+---
+
+## Table Field Reference
+
+### feeds.lance
+
+| Column | Type | Description |
+|---|---|---|
+| `feed_id` | string | UUID primary key |
+| `title` | string | Feed title |
+| `url` | string | RSS/Atom feed URL |
+| `site_url` | string | Website URL |
+| `icon_url` | string | Favicon URL |
+| `category_id` | string | FK → categories |
+| `subcategory_id` | string | Sub-category reference |
+| `last_fetched` | timestamp | Last fetch attempt |
+| `last_article_date` | timestamp | Newest article date |
+| `fetch_interval_mins` | int32 | Minutes between fetches |
+| `fetch_tier` | string | `active` / `slowing` / `quiet` / `dormant` / `dead` |
+| `tier_changed_at` | timestamp | When tier last changed |
+| `last_successful_fetch` | timestamp | Last successful fetch |
+| `error_count` | int32 | Consecutive failures |
+| `last_error` | string | Most recent error |
+| `created_at` | timestamp | When added |
+| `updated_at` | timestamp | Last modification |
+
+### articles.lance
+
+| Column | Type | Description |
+|---|---|---|
+| `article_id` | string | UUID primary key |
+| `feed_id` | string | FK → feeds |
+| `title` | string | Headline |
+| `url` | string | Permalink |
+| `author` | string | Author name |
+| `content` | string | Full HTML content |
+| `summary` | string | Short description |
+| `published_at` | timestamp | Publication date |
+| `fetched_at` | timestamp | When fetcher downloaded this |
+| `is_read` | bool | Read status |
+| `is_starred` | bool | Starred status |
+| `guid` | string | RSS guid / Atom id (dedup key) |
+| `schema_version` | int32 | Schema version at write time |
+| `created_at` | timestamp | When record was created |
+| `updated_at` | timestamp | Last modification |
+
+### categories.lance
+
+| Column | Type | Description |
+|---|---|---|
+| `category_id` | string | UUID primary key |
+| `name` | string | Display name |
+| `parent_id` | string | FK → self for nesting |
+| `sort_order` | int32 | UI ordering hint |
+| `created_at` | timestamp | When added |
+| `updated_at` | timestamp | Last modification |
+
+### pending_feeds.lance
+
+| Column | Type | Description |
+|---|---|---|
+| `url` | string | RSS/Atom URL to subscribe to |
+| `category_id` | string | Optional category |
+| `requested_at` | timestamp | When the user clicked "Add Feed" |
+| `created_at` | timestamp | When record was created |
+| `updated_at` | timestamp | Last modification |
+
+### settings.lance
+
+| Column | Type | Description |
+|---|---|---|
+| `key` | string | Setting key (primary key) |
+| `value` | string | JSON-encoded value |
+| `created_at` | timestamp | When setting was first created |
+| `updated_at` | timestamp | Last modification |
+
+### log_api.lance / log_fetcher.lance
+
+| Column | Type | Description |
+|---|---|---|
+| `log_id` | string | UUID primary key |
+| `timestamp` | timestamp | When the event occurred |
+| `level` | string | `error` / `warn` / `info` / `debug` |
+| `category` | string | Event category (see logs documentation) |
+| `message` | string | Human-readable log message |
+| `details` | string | JSON-encoded extra context |
+| `created_at` | timestamp | When record was written |

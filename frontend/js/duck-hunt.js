@@ -101,7 +101,7 @@ function renderGame(container) {
         <div class="duck-hunt-ground"></div>
       </div>
       <div id="duck-hunt-result" class="duck-hunt-result hidden"></div>
-      <p class="duck-hunt-footer">One shot every 3 minutes. Make it count!</p>
+      <p class="duck-hunt-footer">Like rss-lance? Please give it a ⭐ on <a href="https://github.com/sysadminmike/rss-lance" target="_blank" rel="noopener">GitHub</a>!</p>
     </div>`;
 
   const canvas = document.getElementById('duck-hunt-canvas');
