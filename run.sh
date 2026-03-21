@@ -31,6 +31,11 @@ ensure_venv() {
         echo "Run build.sh setup first."
         exit 1
     fi
+    if [ ! -f "$VENV_PATH/bin/activate" ]; then
+        echo "Venv exists but activate script missing at: $VENV_PATH"
+        echo "Delete .venv/ and re-run: rm -rf .venv && ./build.sh setup"
+        exit 1
+    fi
     source "$VENV_PATH/bin/activate"
 }
 

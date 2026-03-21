@@ -122,9 +122,25 @@ ok()   { echo -e "\033[32m$1\033[0m"; }
 fail() { echo -e "\033[31m$1\033[0m"; exit 1; }
 
 ensure_venv() {
+    # If venv looks broken (python exists but activate missing), recreate it
+    if [ -d "$VENV_PATH" ] && [ ! -f "$VENV_PATH/bin/activate" ]; then
+        echo "  Venv at $VENV_PATH is corrupt (missing bin/activate), recreating..."
+        rm -rf "$VENV_PATH"
+    fi
     if [ ! -f "$VENV_PATH/bin/python" ]; then
         step "Creating Python virtual environment"
-        python3 -m venv "$VENV_PATH"
+        if ! command -v python3 &>/dev/null; then
+            fail "python3 not found. Install Python 3.10+ first."
+        fi
+        if ! python3 -m venv "$VENV_PATH" 2>&1; then
+            echo ""
+            echo "  Failed to create virtual environment."
+            echo "  On Debian/Ubuntu, install the venv module:"
+            echo "    sudo apt install python3-venv"
+            echo "  On Fedora/RHEL:"
+            echo "    sudo dnf install python3-libs"
+            fail "python3 -m venv failed (see above)"
+        fi
     fi
     source "$VENV_PATH/bin/activate"
 }
@@ -195,7 +211,13 @@ cmd_setup() {
 
     step "Verifying Go installation"
     if ! command -v go &>/dev/null; then
-        fail "Go is not installed. Install it from https://go.dev/dl/"
+        echo "  Go is not on your PATH."
+        echo "  If already installed, add it to your PATH:"
+        echo "    export PATH=\$PATH:/usr/local/go/bin"
+        echo "  To make it permanent:"
+        echo "    echo 'export PATH=\$PATH:/usr/local/go/bin' >> ~/.bashrc"
+        echo ""
+        fail "Go not found. Install from https://go.dev/dl/ or add it to your PATH."
     fi
     go version
 
@@ -238,8 +260,8 @@ cmd_server() {
     else
         echo "  WARNING: lancedb-go native lib not found at $lib_dir" >&2
         echo "  Download it with: cd server && go generate ./..." >&2
-        echo "  Falling back to CGO_ENABLED=0 (lancedb-go writes will not work)" >&2
-        export CGO_ENABLED=0
+        echo "  Falling back to lance_external (lancedb-go writes will not work)" >&2
+        LANCE_EXTERNAL=true
     fi
 
     local build_time
@@ -340,7 +362,10 @@ cmd_server() {
             echo "  The server will use tools/duckdb binary at runtime."
             echo "  To retry embedded: ./build.sh --duckdb-embedded server"
             echo ""
-            # If CGo failed, also use external Lance (no native lib available)
+            # CGo genuinely broken: disable it and use external everything.
+            # The offline cache (go-duckdb) will also be disabled; the nocgo
+            # stub makes newOfflineCache return an error handled gracefully.
+            export CGO_ENABLED=0
             LANCE_EXTERNAL=true
             _build_external
         fi
@@ -532,6 +557,12 @@ cmd_duckdb() {
         os_name="osx"
         # DuckDB uses "universal" for macOS (fat binary)
         arch="universal"
+    fi
+    # DuckDB uses "amd64" not "x86_64" and "arm64" not "aarch64"
+    if [ "$arch" = "x86_64" ]; then
+        arch="amd64"
+    elif [ "$arch" = "aarch64" ]; then
+        arch="arm64"
     fi
     local url="https://github.com/duckdb/duckdb/releases/download/${ver}/duckdb_cli-${os_name}-${arch}.zip"
     echo "  Downloading DuckDB $ver for ${os_name}-${arch} ..."

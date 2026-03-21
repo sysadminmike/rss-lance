@@ -24,7 +24,7 @@ import (
 
 	"rss-lance/server/debug"
 
-	_ "github.com/marcboeker/go-duckdb"
+	_ "github.com/marcboeker/go-duckdb/v2"
 )
 
 // cgoStore wraps a DuckDB connection via the go-duckdb CGo driver (reads only).
@@ -1199,6 +1199,9 @@ func (s *cgoStore) logTableExists(name string) bool {
 }
 
 func (s *cgoStore) WriteLog(entry LogEntry) error {
+	if s.logBuf == nil {
+		return nil
+	}
 	s.logBuf.add(entry)
 	return nil
 }

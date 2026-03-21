@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"rss-lance/server/debug"
-
-	_ "github.com/marcboeker/go-duckdb"
 )
 
 // OfflineConfig holds offline-mode settings read from the settings table.
@@ -75,7 +73,7 @@ func newOfflineCache(cfg OfflineConfig) (*offlineCache, error) {
 		}
 	}
 
-	conn, err := sql.Open("duckdb", cfg.CachePath)
+	conn, err := openOfflineDuckDB(cfg.CachePath)
 	if err != nil {
 		return nil, fmt.Errorf("open offline cache %s: %w", cfg.CachePath, err)
 	}
