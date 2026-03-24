@@ -2,6 +2,10 @@
 
 A self-hosted, single-user RSS reader built on **LanceDB** - an open columnar data format stored as plain files. No database server. No web server. No framework. Just files.
 
+<p align="center">
+  <img src="screenshot.png" alt="RSS-Lance screenshot" width="900">
+</p>
+
 ## What Makes This Different
 
 ### No Infrastructure
