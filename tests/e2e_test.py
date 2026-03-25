@@ -377,7 +377,7 @@ def duckdb_query(data_path: str, sql: str) -> list[dict]:
 
     dp = data_path.replace("\\", "/")
     preamble = (
-        "INSTALL lance FROM community; LOAD lance; "
+        "INSTALL lance; LOAD lance; "
         f"ATTACH '{dp}' AS _lance (TYPE LANCE); "
     )
     full_sql = preamble + sql

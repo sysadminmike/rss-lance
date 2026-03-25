@@ -219,7 +219,7 @@ func (s *cliStore) bootstrap() error {
 	if isCloudURI(s.dataPath) {
 		extra = "INSTALL httpfs;\n"
 	}
-	stmts := fmt.Sprintf("INSTALL lance FROM community;\n%s", extra)
+	stmts := fmt.Sprintf("INSTALL lance;\n%s", extra)
 
 	cmd := exec.Command(s.duckdbBin, s.dbPath, "-c", stmts)
 	out, err := cmd.CombinedOutput()

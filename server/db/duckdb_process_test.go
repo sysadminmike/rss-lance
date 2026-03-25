@@ -70,7 +70,7 @@ func TestDuckDBProcessStartup(t *testing.T) {
 	dbPath := filepath.Join(dataPath, "server.duckdb")
 
 	// Ensure extension is installed (Phase 1)
-	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance FROM community;")
+	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance;")
 	cmd.CombinedOutput()
 
 	// Phase 2: start persistent process
@@ -96,7 +96,7 @@ func TestDuckDBProcessQuery(t *testing.T) {
 	}
 	dbPath := filepath.Join(dataPath, "server.duckdb")
 
-	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance FROM community;")
+	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance;")
 	cmd.CombinedOutput()
 
 	proc, err := newDuckDBProcess(duckdbBin, dbPath, dataPath)
@@ -131,7 +131,7 @@ func TestDuckDBProcessLanceQuery(t *testing.T) {
 	}
 	dbPath := filepath.Join(dataPath, "server.duckdb")
 
-	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance FROM community;")
+	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance;")
 	cmd.CombinedOutput()
 
 	proc, err := newDuckDBProcess(duckdbBin, dbPath, dataPath)
@@ -163,7 +163,7 @@ func TestDuckDBProcessEmptyResult(t *testing.T) {
 	}
 	dbPath := filepath.Join(dataPath, "server.duckdb")
 
-	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance FROM community;")
+	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance;")
 	cmd.CombinedOutput()
 
 	proc, err := newDuckDBProcess(duckdbBin, dbPath, dataPath)
@@ -190,7 +190,7 @@ func TestDuckDBProcessMultipleQueries(t *testing.T) {
 	}
 	dbPath := filepath.Join(dataPath, "server.duckdb")
 
-	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance FROM community;")
+	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance;")
 	cmd.CombinedOutput()
 
 	proc, err := newDuckDBProcess(duckdbBin, dbPath, dataPath)
@@ -219,7 +219,7 @@ func TestDuckDBProcessRestart(t *testing.T) {
 	}
 	dbPath := filepath.Join(dataPath, "server.duckdb")
 
-	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance FROM community;")
+	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance;")
 	cmd.CombinedOutput()
 
 	proc, err := newDuckDBProcess(duckdbBin, dbPath, dataPath)
@@ -273,7 +273,7 @@ func TestDuckDBProcessRestartRetry(t *testing.T) {
 	}
 	dbPath := filepath.Join(dataPath, "server.duckdb")
 
-	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance FROM community;")
+	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance;")
 	cmd.CombinedOutput()
 
 	proc, err := newDuckDBProcess(duckdbBin, dbPath, dataPath)
@@ -309,7 +309,7 @@ func TestDuckDBProcessConcurrentQueries(t *testing.T) {
 	}
 	dbPath := filepath.Join(dataPath, "server.duckdb")
 
-	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance FROM community;")
+	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance;")
 	cmd.CombinedOutput()
 
 	proc, err := newDuckDBProcess(duckdbBin, dbPath, dataPath)
@@ -360,7 +360,7 @@ func TestDuckDBProcessClose(t *testing.T) {
 	}
 	dbPath := filepath.Join(dataPath, "server.duckdb")
 
-	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance FROM community;")
+	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance;")
 	cmd.CombinedOutput()
 
 	proc, err := newDuckDBProcess(duckdbBin, dbPath, dataPath)
@@ -400,7 +400,7 @@ func TestDuckDBProcessDoubleRestart(t *testing.T) {
 	}
 	dbPath := filepath.Join(dataPath, "server.duckdb")
 
-	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance FROM community;")
+	cmd := exec.Command(duckdbBin, dbPath, "-c", "INSTALL lance;")
 	cmd.CombinedOutput()
 
 	proc, err := newDuckDBProcess(duckdbBin, dbPath, dataPath)
