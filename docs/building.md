@@ -57,6 +57,7 @@ If omitted, the scripts default to their own directory.
 | `test` | Run all test suites (delegates to `test.ps1` / `test.sh`) |
 | `all` | Full build: setup + duckdb + server + demo-data + tests |
 | `minimum` | Bare minimum to run the app: setup + duckdb + server. No tests, no demo data, no Node.js needed |
+| `minimum-binary` | Like minimum, but downloads a pre-built server binary from GitHub Releases. No Go or GCC needed |
 | `help` | Show available commands |
 
 ### Flags

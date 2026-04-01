@@ -25,7 +25,7 @@
 
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("setup", "server", "server-all", "fetcher", "run-fetcher", "fetch-once", "run-server", "demo-data", "duckdb", "migrate", "migrate-cleanup", "test", "clean", "release", "all", "minimum", "help")]
+    [ValidateSet("setup", "server", "server-all", "fetcher", "run-fetcher", "fetch-once", "run-server", "demo-data", "duckdb", "migrate", "migrate-cleanup", "test", "clean", "release", "all", "minimum", "minimum-binary", "help")]
     [string]$Command = "help",
 
     [Parameter()]
@@ -493,6 +493,97 @@ function Insert-DemoData {
     python "$FetcherDir\demo_feeds.py" --data "$DataDir"
 }
 
+function Download-ServerBinary {
+    Write-Step "Downloading pre-built server binary from GitHub"
+    New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
+
+    $repo = "sysadminmike/rss-lance"
+    $apiUrl = "https://api.github.com/repos/$repo/releases/latest"
+    $assetName = "rss-lance-windows-amd64.zip"
+
+    Write-Host "  Checking latest release from github.com/$repo ..." -ForegroundColor Cyan
+
+    try {
+        $release = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing -Headers @{ Accept = "application/vnd.github.v3+json" }
+    } catch {
+        Write-Host "" -ForegroundColor Red
+        Write-Host "ERROR: Could not fetch latest release from GitHub." -ForegroundColor Red
+        Write-Host "" -ForegroundColor Red
+        Write-Host "Possible reasons:" -ForegroundColor Yellow
+        Write-Host "  - No releases have been published yet" -ForegroundColor Yellow
+        Write-Host "  - Network connectivity issue" -ForegroundColor Yellow
+        Write-Host "  - GitHub API rate limit exceeded" -ForegroundColor Yellow
+        Write-Host "" -ForegroundColor Yellow
+        Write-Host "To create a release, build from source and run:" -ForegroundColor Cyan
+        Write-Host "  .\build.ps1 release" -ForegroundColor Cyan
+        Write-Host "Then upload the zip from release\ to:" -ForegroundColor Cyan
+        Write-Host "  https://github.com/$repo/releases" -ForegroundColor Cyan
+        exit 1
+    }
+
+    $tag = $release.tag_name
+    Write-Host "  Latest release: $tag" -ForegroundColor Green
+
+    $asset = $release.assets | Where-Object { $_.name -eq $assetName }
+    if (-not $asset) {
+        Write-Host "" -ForegroundColor Red
+        Write-Host "ERROR: Release $tag does not contain '$assetName'." -ForegroundColor Red
+        Write-Host "Available assets:" -ForegroundColor Yellow
+        foreach ($a in $release.assets) {
+            Write-Host "  - $($a.name)" -ForegroundColor Yellow
+        }
+        Write-Host "" -ForegroundColor Yellow
+        Write-Host "Build and upload the Windows zip with: .\build.ps1 release" -ForegroundColor Cyan
+        exit 1
+    }
+
+    $downloadUrl = $asset.browser_download_url
+    $zipPath = Join-Path $BuildDir "rss-lance-release.zip"
+    $extractDir = Join-Path $BuildDir "_release_extract"
+
+    Write-Host "  Downloading $assetName ($([math]::Round($asset.size / 1MB, 1)) MB) ..."
+    Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing
+
+    # Extract to a temp dir, then copy what we need
+    if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
+    Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+    Remove-Item $zipPath
+
+    # The zip contains a rss-lance/ folder from Build-Release
+    $innerDir = Get-ChildItem $extractDir -Directory | Select-Object -First 1
+    if (-not $innerDir) {
+        # Flat zip -- files are directly in extract dir
+        $innerDir = Get-Item $extractDir
+    }
+
+    # Copy server exe
+    $exeSrc = Join-Path $innerDir.FullName "rss-lance-server.exe"
+    if (Test-Path $exeSrc) {
+        Copy-Item $exeSrc "$BuildDir\rss-lance-server.exe" -Force
+        Write-Host "  Extracted: build\rss-lance-server.exe" -ForegroundColor DarkGray
+    } else {
+        Write-Host "ERROR: rss-lance-server.exe not found in release zip" -ForegroundColor Red
+        Remove-Item -Recurse -Force $extractDir
+        exit 1
+    }
+
+    # Copy tools/lance_writer.py and tools/duckdb.exe if present in the zip
+    $toolsSrc = Join-Path $innerDir.FullName "tools"
+    if (Test-Path $toolsSrc) {
+        $toolsDest = Join-Path $BuildDir "tools"
+        New-Item -ItemType Directory -Force -Path $toolsDest | Out-Null
+        Get-ChildItem $toolsSrc -File | ForEach-Object {
+            Copy-Item $_.FullName "$toolsDest\$($_.Name)" -Force
+            Write-Host "  Extracted: build\tools\$($_.Name)" -ForegroundColor DarkGray
+        }
+    }
+
+    # Clean up
+    Remove-Item -Recurse -Force $extractDir
+
+    Write-Host "Server binary ready: build\rss-lance-server.exe ($tag)" -ForegroundColor Green
+}
+
 function Build-Release {
     Write-Step "Building release package"
 
@@ -615,6 +706,8 @@ Commands:
   release      Build + package a release zip (exe + frontend + fetcher + config)
   minimum      Bare minimum to run the app (setup + duckdb + server)
                No tests, no demo data, no Node.js needed
+  minimum-binary  Like minimum, but downloads a pre-built server exe from
+               GitHub Releases instead of compiling. No Go or GCC needed.
   all          Full build (setup + duckdb + server + demo-data + tests)
                Use -NoTests to skip tests: .\build.ps1 -NoTests all
   help         Show this help
@@ -650,6 +743,16 @@ switch ($Command) {
         Setup; Install-DuckDB; Build-Server
         Write-Host ""
         Write-Host "Minimum build complete. Your app is ready to run:" -ForegroundColor Green
+        Write-Host "  1. Fetch articles:  .\run.ps1 fetch-once" -ForegroundColor Cyan
+        Write-Host "  2. Start server:    .\run.ps1 server" -ForegroundColor Cyan
+        Write-Host "  3. Open browser:    http://127.0.0.1:8080" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "Optional: insert demo feeds with  .\build.ps1 demo-data" -ForegroundColor Yellow
+    }
+    "minimum-binary" {
+        Setup; Install-DuckDB; Download-ServerBinary
+        Write-Host ""
+        Write-Host "Setup complete (pre-built binary). Your app is ready to run:" -ForegroundColor Green
         Write-Host "  1. Fetch articles:  .\run.ps1 fetch-once" -ForegroundColor Cyan
         Write-Host "  2. Start server:    .\run.ps1 server" -ForegroundColor Cyan
         Write-Host "  3. Open browser:    http://127.0.0.1:8080" -ForegroundColor Cyan

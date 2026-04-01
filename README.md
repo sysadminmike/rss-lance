@@ -145,7 +145,12 @@ The `all` command sets up the Python venv, downloads DuckDB, builds the Go serve
 > ./build.sh minimum    # Linux / macOS
 > ```
 > This runs only setup → duckdb → server. You can add feeds later from the UI or command line.
-
+> **Pre-built binary (no Go/GCC needed):** If you do not have Go or GCC installed, use `minimum-binary` to download a pre-built server exe from GitHub Releases:
+> ```powershell
+> .\build.ps1 minimum-binary   # Windows
+> ./build.sh minimum-binary    # Linux / macOS
+> ```
+> This sets up the Python venv and fetcher deps, downloads DuckDB CLI, and downloads the latest server binary from GitHub -- no compilation required.
 ---
 
 ## How It Works

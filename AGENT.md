@@ -231,6 +231,7 @@ cd server
 | `clean` | Remove `build/` directory |
 | `release` | Build server, package zip with exe + duckdb + frontend + fetcher + config + run scripts |
 | `minimum` | Bare minimum to run the app (setup + duckdb + server). No tests, no demo data, no Node.js needed |
+| `minimum-binary` | Like minimum, but downloads a pre-built server exe from GitHub Releases. No Go or GCC needed |
 | `all` | Full build (setup + duckdb + server + demo-data) |
 | `help` | Show available commands |
 
