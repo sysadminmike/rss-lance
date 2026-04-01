@@ -275,7 +275,7 @@ function Build-Server {
             Write-Host "  WARNING: Could not detect DuckDB version" -ForegroundColor Yellow
         }
         try {
-            $extJson = & $duckBin -json -c "INSTALL lance FROM community; LOAD lance; SELECT extension_version FROM duckdb_extensions() WHERE extension_name='lance' AND loaded=true" 2>$null | Out-String
+            $extJson = & $duckBin -json -c "INSTALL lance; LOAD lance; SELECT extension_version FROM duckdb_extensions() WHERE extension_name='lance' AND loaded=true" 2>$null | Out-String
             $extObj = $extJson | ConvertFrom-Json
             if ($extObj -and $extObj[0].extension_version) {
                 $lanceVer = $extObj[0].extension_version
@@ -351,7 +351,7 @@ function Build-ServerAll {
             Write-Host "  WARNING: Could not detect DuckDB version" -ForegroundColor Yellow
         }
         try {
-            $extJson = & $duckBin -json -c "INSTALL lance FROM community; LOAD lance; SELECT extension_version FROM duckdb_extensions() WHERE extension_name='lance' AND loaded=true" 2>$null | Out-String
+            $extJson = & $duckBin -json -c "INSTALL lance; LOAD lance; SELECT extension_version FROM duckdb_extensions() WHERE extension_name='lance' AND loaded=true" 2>$null | Out-String
             $extObj = $extJson | ConvertFrom-Json
             if ($extObj -and $extObj[0].extension_version) {
                 $lanceVer = $extObj[0].extension_version

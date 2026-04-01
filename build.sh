@@ -290,7 +290,7 @@ cmd_server() {
             echo "  WARNING: Could not detect DuckDB version"
         fi
         local ext_json
-        if ext_json=$("$duck_bin" -json -c "INSTALL lance FROM community; LOAD lance; SELECT extension_version FROM duckdb_extensions() WHERE extension_name='lance' AND loaded=true" 2>/dev/null); then
+        if ext_json=$("$duck_bin" -json -c "INSTALL lance; LOAD lance; SELECT extension_version FROM duckdb_extensions() WHERE extension_name='lance' AND loaded=true" 2>/dev/null); then
             local lance_ver
             lance_ver=$(echo "$ext_json" | grep -o '"extension_version":"[^"]*"' | head -1 | cut -d'"' -f4)
             if [ -n "$lance_ver" ]; then
@@ -438,7 +438,7 @@ cmd_server_all() {
                 fi
             fi
             local ext_json
-            if ext_json=$("$duck_bin" -json -c "INSTALL lance FROM community; LOAD lance; SELECT extension_version FROM duckdb_extensions() WHERE extension_name='lance' AND loaded=true" 2>/dev/null); then
+            if ext_json=$("$duck_bin" -json -c "INSTALL lance; LOAD lance; SELECT extension_version FROM duckdb_extensions() WHERE extension_name='lance' AND loaded=true" 2>/dev/null); then
                 local lance_ver
                 lance_ver=$(echo "$ext_json" | grep -o '"extension_version":"[^"]*"' | head -1 | cut -d'"' -f4)
                 if [ -n "$lance_ver" ]; then

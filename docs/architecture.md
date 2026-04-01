@@ -23,7 +23,7 @@ RSS-Lance uses **two database engines** for different jobs:
 
 - **Windows / CLI build**: the persistent query subprocess runs with `:memory:`.
   `server.duckdb` is only opened once at startup by a one-shot process that runs
-  `INSTALL lance FROM community` to cache the extension binary on disk. The main
+  `INSTALL lance` to cache the extension binary on disk. The main
   query process then `LOAD`s the cached extension but runs entirely in memory.
 - **Linux / CGo build**: `server.duckdb` is opened as a file-backed DuckDB
   database that stays open for all queries. It still holds no user data -- just

@@ -100,7 +100,7 @@ section("Step 1: Install Lance extension (one-shot)")
 
 result = subprocess.run(
     [str(DUCKDB_BIN), DB_PATH, "-c",
-     "INSTALL lance FROM community;"],
+     "INSTALL lance;"],
     capture_output=True, text=True, timeout=30,
 )
 print(f"  exit code: {result.returncode}")
@@ -321,7 +321,7 @@ class DuckDBProcess:
         # Bootstrap: LOAD, ATTACH, then sentinel
         with self.lock:
             boot = (
-                f"INSTALL lance FROM community;\n"
+                f"INSTALL lance;\n"
                 f"LOAD lance;\n"
                 f"ATTACH IF NOT EXISTS '{lance_path}' AS _lance (TYPE LANCE);\n"
             )

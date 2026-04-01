@@ -159,7 +159,7 @@ func (s *cgoStore) bootstrap() error {
 	// Install/load Lance extension and ATTACH data dir as Lance namespace.
 	// For S3 paths, also install httpfs so DuckDB can read from S3.
 	stmts := []string{
-		`INSTALL lance FROM community`,
+		`INSTALL lance`,
 		`LOAD lance`,
 	}
 	if isCloudURI(s.dataPath) {
